@@ -1,0 +1,16 @@
+# ─────────────────────────────────────────────────────────────
+# Profile: aws
+# Used for: production deployment on AWS ECS
+# Start with: --spring.profiles.active=aws
+# Credentials should come from environment variables or IAM role
+# ─────────────────────────────────────────────────────────────
+
+storage:
+  s3:
+    bucket: ${AWS_S3_BUCKET:my-demo-bucket}
+    region: ${AWS_REGION:eu-west-1}
+    # No endpoint for real AWS — SDK resolves it automatically
+    endpoint:
+    access-key: ${AWS_ACCESS_KEY_ID:}
+    secret-key: ${AWS_SECRET_ACCESS_KEY:}
+

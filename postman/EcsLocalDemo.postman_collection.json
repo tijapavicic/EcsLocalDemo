@@ -1,0 +1,128 @@
+{
+  "info": {
+    "_postman_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+    "name": "ECS Local Demo — MinIO File Upload",
+    "description": "Manual testing collection for the ECS Local Demo app running with the local-minio profile.\n\nPrerequisites:\n1. Run `docker compose up -d` to start MinIO + app\n2. Wait until both services are healthy\n3. Use the requests below",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:8080",
+      "type": "string",
+      "description": "Base URL of the running app. Change to your server URL if deployed remotely."
+    }
+  ],
+  "item": [
+    {
+      "name": "Health Check",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/actuator/health",
+          "host": ["{{baseUrl}}"],
+          "path": ["actuator", "health"]
+        },
+        "description": "Verify the application is running and healthy.\nExpected: 200 OK with {\"status\": \"UP\"}"
+      },
+      "response": [
+        {
+          "name": "Healthy",
+          "originalRequest": {
+            "method": "GET",
+            "url": { "raw": "{{baseUrl}}/actuator/health" }
+          },
+          "status": "OK",
+          "code": 200,
+          "body": "{\"status\":\"UP\"}"
+        }
+      ]
+    },
+    {
+      "name": "Upload File",
+      "request": {
+        "method": "POST",
+        "header": [],
+        "body": {
+          "mode": "formdata",
+          "formdata": [
+            {
+              "key": "file",
+              "type": "file",
+              "src": "",
+              "description": "Select any file from your computer to upload"
+            }
+          ]
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/files/upload",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "files", "upload"]
+        },
+        "description": "Upload a file to MinIO S3-compatible storage.\n\nSteps:\n1. Click 'Body' tab → 'form-data'\n2. Set the 'file' field type to 'File'\n3. Click 'Select Files' and pick any file\n4. Send\n\nExpected response: 201 Created\n```json\n{\n  \"key\": \"2024-01-15/abc12345-your-file.pdf\",\n  \"bucket\": \"demo-bucket\",\n  \"contentType\": \"application/pdf\",\n  \"sizeBytes\": 12345,\n  \"uploadedAt\": \"2024-01-15T10:30:00Z\"\n}\n```\n\nYou can then verify the file exists in MinIO Console: http://localhost:9001"
+      },
+      "response": [
+        {
+          "name": "Success - 201 Created",
+          "originalRequest": {
+            "method": "POST",
+            "body": {
+              "mode": "formdata",
+              "formdata": [{ "key": "file", "type": "file", "src": "" }]
+            },
+            "url": { "raw": "{{baseUrl}}/api/files/upload" }
+          },
+          "status": "Created",
+          "code": 201,
+          "body": "{\n  \"key\": \"2024-01-15/a3f1b2c4-example.pdf\",\n  \"bucket\": \"demo-bucket\",\n  \"contentType\": \"application/pdf\",\n  \"sizeBytes\": 8192,\n  \"uploadedAt\": \"2024-01-15T10:30:00.000Z\"\n}"
+        },
+        {
+          "name": "Error - 400 Bad Request (empty file)",
+          "originalRequest": {
+            "method": "POST",
+            "url": { "raw": "{{baseUrl}}/api/files/upload" }
+          },
+          "status": "Bad Request",
+          "code": 400,
+          "body": ""
+        },
+        {
+          "name": "Error - 500 Internal Server Error (storage failure)",
+          "originalRequest": {
+            "method": "POST",
+            "url": { "raw": "{{baseUrl}}/api/files/upload" }
+          },
+          "status": "Internal Server Error",
+          "code": 500,
+          "body": "{\n  \"error\": \"Storage operation failed\",\n  \"detail\": \"S3 connection refused\"\n}"
+        }
+      ]
+    },
+    {
+      "name": "Upload File (curl equivalent)",
+      "request": {
+        "method": "POST",
+        "header": [],
+        "body": {
+          "mode": "formdata",
+          "formdata": [
+            {
+              "key": "file",
+              "type": "file",
+              "src": "",
+              "description": "Equivalent curl: curl -X POST http://localhost:8080/api/files/upload -F 'file=@/path/to/file.txt'"
+            }
+          ]
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/files/upload",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "files", "upload"]
+        },
+        "description": "Same endpoint — included as a reminder of the curl equivalent:\n```\ncurl -X POST http://localhost:8080/api/files/upload \\\n     -F 'file=@/path/to/your/file.txt'\n```"
+      }
+    }
+  ]
+}
+

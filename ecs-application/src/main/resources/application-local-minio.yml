@@ -1,0 +1,16 @@
+# ─────────────────────────────────────────────────────────────
+# Profile: local-minio
+# Used for: local development with Docker Compose MinIO
+# Start with: --spring.profiles.active=local-minio
+# ─────────────────────────────────────────────────────────────
+
+storage:
+  s3:
+    bucket: demo-bucket
+    region: us-east-1
+    # MinIO endpoint — when running locally (outside Docker)
+    # Override via STORAGE_S3_ENDPOINT env var when running inside Docker
+    endpoint: http://localhost:9000
+    access-key: minioadmin
+    secret-key: minioadmin
+

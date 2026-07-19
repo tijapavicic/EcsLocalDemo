@@ -1,0 +1,36 @@
+spring:
+  application:
+    name: ecs-local-demo
+  servlet:
+    multipart:
+      enabled: true
+      max-file-size: 100MB
+      max-request-size: 110MB
+
+server:
+  port: 8080
+
+# Default storage config — safe fallback values.
+# Override via an active profile: --spring.profiles.active=local-minio  or  aws
+storage:
+  s3:
+    bucket: ${AWS_S3_BUCKET:demo-bucket}
+    region: ${AWS_REGION:us-east-1}
+    endpoint: ${STORAGE_S3_ENDPOINT:}
+    access-key: ${AWS_ACCESS_KEY_ID:}
+    secret-key: ${AWS_SECRET_ACCESS_KEY:}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      show-details: always
+
+logging:
+  level:
+    com.example: INFO
+    software.amazon.awssdk: WARN
+
