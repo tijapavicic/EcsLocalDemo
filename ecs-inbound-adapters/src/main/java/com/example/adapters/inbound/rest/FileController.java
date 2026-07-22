@@ -125,7 +125,7 @@ public class FileController {
                 userContext,
                 storyId,
                 file.getOriginalFilename(),
-                file.getContentType() != null ? file.getContentType() : MediaType.APPLICATION_OCTET_STREAM_VALUE,
+                file.getContentType(),  // ← Pass declared content type; strategy will resolve if null
                 file.getBytes()
         );
 

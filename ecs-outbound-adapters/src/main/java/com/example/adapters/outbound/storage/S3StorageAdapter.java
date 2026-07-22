@@ -35,10 +35,15 @@ public class S3StorageAdapter implements StoragePort {
     }
 
     @Override
-    public StorageObject store(String bucket, String key, String contentType, byte[] content)
+    public StorageObject store(String bucket, String key, String contentType, byte[] content, String userId)
             throws StorageException {
 
-        log.debug("Storing object: bucket={} key={} contentType={} bytes={}", bucket, key, contentType, content.length);
+        // Validate userId is provided (fail-fast)
+        if (userId == null || userId.isBlank()) {
+            throw new IllegalArgumentException("userId must not be blank for audit trail");
+        }
+
+        log.debug("Storing object: bucket={} key={} contentType={} userId={} bytes={}", bucket, key, contentType, userId, content.length);
 
         try {
             PutObjectRequest request = PutObjectRequest.builder()
@@ -46,24 +51,25 @@ public class S3StorageAdapter implements StoragePort {
                     .key(key)
                     .contentType(contentType)
                     .contentLength((long) content.length)
+                    // Optional: store userId in S3 object metadata for server-side audit
+                    .metadata(java.util.Map.of("uploaded-by", userId))
                     .build();
 
             s3Client.putObject(request, RequestBody.fromBytes(content));
 
-            log.info("Stored: s3://{}/{} ({} bytes)", bucket, key, content.length);
+            log.info("Stored: s3://{}/{} ({} bytes, userId={})", bucket, key, content.length, userId);
 
-            // Return StorageObject without userId — userId is set by FileServiceImpl
-            // from the UserContext after storage succeeds.
-            return new StorageObject(key, bucket, contentType, (long) content.length, Instant.now(), null);
+            // Return COMPLETE StorageObject with userId (all fields populated)
+            return new StorageObject(key, bucket, contentType, (long) content.length, Instant.now(), userId);
 
         } catch (S3Exception ex) {
             throw new StorageException(
-                    "S3 store failed [bucket=%s key=%s]: %s".formatted(bucket, key, ex.awsErrorDetails().errorMessage()),
+                    "S3 store failed [bucket=%s key=%s user=%s]: %s".formatted(bucket, key, userId, ex.awsErrorDetails().errorMessage()),
                     ex
             );
         } catch (Exception ex) {
             throw new StorageException(
-                    "Unexpected error storing [bucket=%s key=%s]: %s".formatted(bucket, key, ex.getMessage()),
+                    "Unexpected error storing [bucket=%s key=%s user=%s]: %s".formatted(bucket, key, userId, ex.getMessage()),
                     ex
             );
         }

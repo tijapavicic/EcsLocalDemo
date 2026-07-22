@@ -1,5 +1,6 @@
 package com.example.application.config;
 
+import com.example.core.ports.ContentTypeResolverPort;
 import com.example.core.ports.FileServicePort;
 import com.example.core.ports.StorageKeyGeneratorPort;
 import com.example.core.ports.StoragePort;
@@ -104,20 +105,23 @@ public class StorageConfiguration {
      * <ul>
      *   <li>{@link StoragePort} — S3StorageAdapter (auto-discovered @Component)</li>
      *   <li>{@link StorageKeyGeneratorPort} — UserScopedKeyGenerator (auto-discovered @Component)</li>
+     *   <li>{@link ContentTypeResolverPort} — DefaultContentTypeResolver (auto-discovered @Component)</li>
      *   <li>{@code bucket} — from S3Configuration</li>
      * </ul>
      *
      * <p><strong>Principle:</strong> Use case depends on port interfaces, not concrete adapters.
      * Adapters are auto-discovered by Spring component scan.</p>
      *
-     * @param storagePort   the S3StorageAdapter found by component scan
-     * @param keyGenerator  the UserScopedKeyGenerator found by component scan
-     * @param cfg           the profile-specific properties, provides the bucket name
+     * @param storagePort         the S3StorageAdapter found by component scan
+     * @param keyGenerator        the UserScopedKeyGenerator found by component scan
+     * @param contentTypeResolver the DefaultContentTypeResolver found by component scan
+     * @param cfg                 the profile-specific properties, provides the bucket name
      */
     @Bean
-    public FileServicePort fileService(StoragePort storagePort, StorageKeyGeneratorPort keyGenerator, S3Configuration cfg) {
+    public FileServicePort fileService(StoragePort storagePort, StorageKeyGeneratorPort keyGenerator,
+                                       ContentTypeResolverPort contentTypeResolver, S3Configuration cfg) {
         log.info("FileService configured with bucket={}", cfg.getBucket());
-        return new FileServiceImpl(storagePort, keyGenerator, cfg.getBucket());
+        return new FileServiceImpl(storagePort, keyGenerator, contentTypeResolver, cfg.getBucket());
     }
 }
 
