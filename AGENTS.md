@@ -4,6 +4,14 @@
 **Architecture:** Hexagonal (Ports & Adapters)  
 **Stack:** Java 21 · Spring Boot 3.1.7 · Maven · AWS SDK v2 · TestContainers · ArchUnit  
 **Enforcement:** STRICT — ArchUnit tests block builds on violations
+**SOLID Principles:** Followed rigorously; no god classes, no cross-layer dependencies
+
+When refactoring, follow these rules:
+- **S** — Each class/method has one clear responsibility; no god classes.
+- **O** — New behaviour added via extension (new implementations/strategies), not by editing existing logic.
+- **L** — Implementations are interchangeable; no coercion of base types.
+- **I** — Ports are narrow and focused; clients are not forced to depend on unused methods.
+- **D** — High-level modules depend on port interfaces, never on concrete adapters.
 
 ---
 
@@ -12,9 +20,15 @@
 This project implements **Hexagonal Architecture** with strict separation:
 
 ```
-HTTP Request
+HTTP Request (with Authorization: Bearer token)
+    ↓
+[BearerTokenAuthenticationFilter] (security interceptor)
     ↓
 [FileController] (inbound adapter)
+    ↓
+TokenExtractorPort (token validation port)
+    ↓
+[BearerTokenExtractor] (token adapter — extracts UserContext)
     ↓
 FileServicePort (inbound port interface)
     ↓
@@ -28,6 +42,8 @@ StoragePort (outbound port interface)
 ```
 
 **Critical Rule:** Adapters NEVER call adapters. All communication flows through domain ports (interfaces).
+
+**Authentication Flow:** Bearer token → extracted and validated by `TokenExtractorPort` → `UserContext` injected into use cases → files scoped to `users/{userId}/...`
 
 ---
 
@@ -45,10 +61,13 @@ StoragePort (outbound port interface)
 - ✅ Inject inbound ports (interfaces), never adapters
 - ✅ Translate HTTP/events to domain calls
 - ✅ Exception handlers convert domain exceptions to HTTP responses
+- ✅ Security adapters (Bearer token extraction, authorization) implement `TokenExtractorPort`
+- ✅ Input validation delegated to validator classes (e.g., `FileUploadValidator`)
+- ✅ ThreadLocal context storage via `RequestContextHolder` for downstream access to `UserContext`
 - ❌ NO business logic (that's in core)
 - ❌ NO direct calls to outbound adapters
 
-**Example:** `FileController` receives multipart files, calls `FileServicePort.upload()`, returns `201 Created`.
+**Example:** `FileController` extracts Bearer token → calls `TokenExtractorPort.extractUserContext()` → calls `FileServicePort.upload(UserContext, ...)` → returns `201 Created` with `StorageObject` (includes `userId`)
 
 ### `ecs-outbound-adapters/` — Storage / External APIs
 - ✅ Implement outbound port interfaces (e.g., `StoragePort`)
@@ -78,16 +97,20 @@ StoragePort (outbound port interface)
 
 ## 🔄 Data Flow Example: File Upload
 
-1. **Client sends:** `POST /api/files/upload` (multipart/form-data)
-2. **Spring routes to:** `FileController.upload(MultipartFile file)`
-3. **Controller extracts:** filename, contentType, bytes
-4. **Controller calls:** `fileService.upload(filename, contentType, content)`
-5. **FileServiceImpl validates:** filename (not blank), content (not empty)
-6. **FileServiceImpl generates:** collision-free key `2024-01-15/uuid-filename.pdf`
-7. **FileServiceImpl calls:** `storagePort.store(bucket, key, contentType, content)`
-8. **S3StorageAdapter (MinIO/AWS):** builds `PutObjectRequest`, uploads via `S3Client.putObject()`
-9. **Returns:** `StorageObject` with metadata (key, bucket, contentType, size, timestamp)
-10. **Controller returns:** `201 Created` with JSON body
+1. **Client sends:** `POST /api/files/upload` (multipart/form-data, with `Authorization: Bearer token` header)
+2. **Security filter** (`BearerTokenAuthenticationFilter`) intercepts request
+3. **Token extraction:** `AuthorizationExtractor` parses `Authorization: Bearer <token>` header
+4. **Token validation:** `TokenExtractorPort.extractUserContext(token)` → returns `UserContext` (userId, email)
+5. **Spring routes to:** `FileController.upload(authHeader, file)`
+6. **Controller validation:** `FileUploadValidator.validate(file)` checks file size, MIME type, etc.
+7. **Controller calls:** `tokenExtractor.extractUserContext(token)` → gets `UserContext`
+8. **Controller calls:** `fileService.upload(UserContext, filename, contentType, content)`
+9. **FileServiceImpl validates:** filename (not blank), content (not empty)
+10. **FileServiceImpl generates:** user-scoped key `users/{userId}/2024-01-15/uuid-filename.pdf`
+11. **FileServiceImpl calls:** `storagePort.store(bucket, key, contentType, content)`
+12. **S3StorageAdapter (MinIO/AWS):** builds `PutObjectRequest`, uploads via `S3Client.putObject()`
+13. **Returns:** `StorageObject` with metadata (key, bucket, contentType, size, timestamp, **userId**)
+14. **Controller returns:** `201 Created` with JSON body (includes userId for audit trail)
 
 ---
 
@@ -152,7 +175,181 @@ mvn spring-boot:run -Dspring-boot.run.arguments="--spring.profiles.active=aws"
 
 ---
 
-## ✅ ArchUnit Enforcement (4 Rules)
+## 🔐 Authentication & User Context (IDM)
+
+### Bearer Token Flow
+
+All `/api/files/**` endpoints require Bearer token authentication. Token format (development): `Base64(userId:email)`.
+
+**Token Format (Base64-encoded, development only):**
+```bash
+# Generate token
+TOKEN=$(echo -n "alice:alice@example.com" | base64)
+echo "Authorization: Bearer $TOKEN"
+```
+
+**In production**, replace `BearerTokenExtractor` with JWT validation.
+
+### RequestContextHolder — Thread-Safe Context Storage
+
+`RequestContextHolder` is a ThreadLocal-based utility for storing/retrieving `UserContext` in request scope. This eliminates the need to pass `UserContext` through every method parameter.
+
+**Flow:**
+1. `BearerTokenAuthenticationFilter` extracts and validates Bearer token
+2. Stores extracted `UserContext` in `RequestContextHolder` (ThreadLocal)
+3. Downstream handlers (controllers, services, adapters) can retrieve context via `RequestContextHolder.get()`
+4. Filter always calls `RequestContextHolder.clear()` in finally block to prevent ThreadLocal leaks
+
+**Usage:**
+```java
+// In BearerTokenAuthenticationFilter (filter chain)
+UserContext userContext = tokenExtractor.extractUserContext(token);
+RequestContextHolder.set(userContext);  // Store in ThreadLocal
+
+// Later in controller/service
+UserContext userContext = RequestContextHolder.get();  // Retrieve from ThreadLocal
+
+// In filter's finally block (CRITICAL)
+RequestContextHolder.clear();  // Prevent ThreadLocal leaks in servlet pools
+```
+
+**Thread-Safety:** Each request runs on its own thread; ThreadLocal maintains separate context per thread. Always clear in finally blocks.
+
+### Ports & Domain Objects
+
+**Inbound Port (Token Validation):**
+```java
+// ecs-core/ports/TokenExtractorPort.java
+public interface TokenExtractorPort {
+  UserContext extractUserContext(String token) throws TokenValidationException;
+  boolean isTokenValid(String token);
+}
+```
+
+**Domain Object:**
+```java
+// ecs-core/domain/UserContext.java — immutable, thread-safe
+public class UserContext {
+  private final String userId;      // "alice"
+  private final String email;       // "alice@example.com"
+  private final String token;       // raw bearer token
+  // getters, equals, hashCode
+}
+```
+
+**Updated Use Case Signature:**
+```java
+// ecs-core/ports/FileServicePort.java
+public StorageObject upload(
+  UserContext userContext,           // ← NEW: user identity
+  String filename, 
+  String contentType, 
+  byte[] content
+) throws StorageException;
+```
+
+### Security Configuration
+
+**Feature Flag — Enable/Disable Authentication:**
+```yaml
+# application.yml
+app:
+  security:
+    bearer-token-auth-enabled: true  # Set to false for testing without auth
+```
+
+**When Enabled:**
+- `BearerTokenAuthenticationFilter` intercepts all requests
+- Validates Bearer token via `TokenExtractorPort`
+- Stores `UserContext` in ThreadLocal (via `RequestContextHolder`) for downstream access
+- `/api/files/**` endpoints require authentication
+- `/actuator/**` and `/swagger-ui/**` are public
+
+**When Disabled (testing/debugging):**
+- Bearer token filter is skipped entirely
+- All requests allowed without authentication
+- ⚠️ **WARNING:** Do NOT use disabled mode in production
+
+### Storage Key Format (User-Scoped)
+
+Files are stored in user-scoped paths to prevent cross-user access and enable audit trails:
+
+```
+users/{userId}/{yyyy-MM-dd}/{uuid}-{filename}
+```
+
+**Example:**
+```
+users/alice/2026-07-22/3f4a1b2c-report.pdf
+users/bob/2026-07-22/2e8d9a7f-photo.jpg
+```
+
+Each user's files are isolated within their `users/{userId}/` prefix, enabling:
+- 🔒 Cross-user access prevention (authorization boundary)
+- 📋 Audit trails (who uploaded what, when)
+- 📊 Per-user storage quotas (future enhancement)
+
+---
+
+## 🛡️ Input Validation
+
+Validation is delegated to `FileUploadValidator` (separation of concerns):
+
+```java
+// ecs-inbound-adapters/rest/FileUploadValidator.java
+public void validate(MultipartFile file) {
+  if (file == null || file.isEmpty()) {
+    throw new IllegalArgumentException("file is required and must not be empty");
+  }
+  if (file.getSize() > MAX_FILE_SIZE) {
+    throw new IllegalArgumentException("file size exceeds limit");
+  }
+  // Additional MIME type, content checks, etc.
+}
+```
+
+Called early in the request lifecycle:
+```java
+// FileController.java
+@PostMapping("/upload")
+public ResponseEntity<StorageObject> upload(...) {
+  fileValidator.validate(file);        // ← Fail fast
+  UserContext user = tokenExtractor.extractUserContext(token);
+  StorageObject result = fileService.upload(user, ...);
+  return ResponseEntity.status(HttpStatus.CREATED).body(result);
+}
+```
+
+---
+
+## ⚡ Rate Limiting
+
+Rate limiting is implemented via `RateLimitInterceptor` (HTTP interceptor pattern).
+
+**Configuration:**
+```yaml
+# application.yml
+app:
+  rate-limit:
+    requests-per-minute: 60
+```
+
+**How it works:**
+1. `RateLimitInterceptor` extends `HandlerInterceptor`
+2. Registered in `WebMvcConfiguration` as a Spring Bean
+3. Tracks request count per client (by IP or user ID)
+4. Returns `HTTP 429 Too Many Requests` when limit exceeded
+5. Transparent to business logic (no Spring in core)
+
+**Response when rate-limited:**
+```json
+{
+  "error": "Too Many Requests",
+  "detail": "Rate limit exceeded: 60 requests per minute"
+}
+```
+
+---
 
 Tested by `HexagonalArchitectureTest` — **build fails if any rule breaks**:
 
@@ -264,47 +461,50 @@ class FileControllerTest {
 
 **Location:** `ecs-application/src/test/` — Integration tests live with the application module, not in ecs-tests. This follows clean hexagonal architecture: tests that need the full Spring context belong where Spring starts.
 
+#### Basic File Upload (without authentication)
 ```java
 @Testcontainers
 @SpringBootTest(classes = Application.class, webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 @ActiveProfiles("local-minio")
 class FileUploadIT {
-  @Container
-  static GenericContainer<?> minio = new GenericContainer<>("minio/minio:RELEASE.2023-09-30T07-02-29Z")
-    .withEnv("MINIO_ROOT_USER", "minioadmin")
-    .withEnv("MINIO_ROOT_PASSWORD", "minioadmin")
-    .withExposedPorts(9000)
-    .waitingFor(Wait.forHttp("/minio/health/live").forPort(9000));
-  
-  @DynamicPropertySource
-  static void overrideEndpoint(DynamicPropertyRegistry registry) {
-    registry.add("storage.s3.endpoint", () -> "http://localhost:" + minio.getMappedPort(9000));
-  }
-  
-  @Autowired
-  private TestRestTemplate restTemplate;
+  // ... TestContainers MinIO setup ...
   
   @Test
   void upload_endToEnd_persistsFileInMinio_returns201() {
-    byte[] content = "test data".getBytes();
-    MultiValueMap<String, Object> body = new LinkedMultiValueMap<>();
-    body.add("file", new ByteArrayResource(content) {
-      @Override public String getFilename() { return "test.txt"; }
-    });
-    
-    ResponseEntity<StorageObject> response = restTemplate.postForEntity(
-      "/api/files/upload",
-      new HttpEntity<>(body, new HttpHeaders()),
-      StorageObject.class
-    );
-    
-    assertThat(response.getStatusCode()).isEqualTo(HttpStatus.CREATED);
-    assertThat(response.getBody().getKey()).contains("test.txt");
+    // Test file upload
   }
 }
 ```
 
-**Key:** TestContainers spins up real MinIO. `@DynamicPropertySource` injects container endpoint. Full Spring context. Tests real HTTP → domain → adapter → storage flow.
+#### File Upload with IDM (Bearer Token Authentication)
+```java
+@Testcontainers
+@SpringBootTest(classes = Application.class, webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+@ActiveProfiles("local-minio")
+class FileUploadWithIDMIT {
+  @Autowired private TestRestTemplate restTemplate;
+  
+  @Test
+  void uploadWithBearerToken_returns201_withUserScopedKey() {
+    // Generate Bearer token
+    String token = Base64.getEncoder().encodeToString("alice:alice@example.com".getBytes());
+    
+    // Upload with Bearer token
+    HttpHeaders headers = new HttpHeaders();
+    headers.set("Authorization", "Bearer " + token);
+    
+    // Assert: key is user-scoped (users/alice/...)
+    // Assert: response includes userId
+  }
+  
+  @Test
+  void uploadWithInvalidToken_returns401_unauthorized() {
+    // Test invalid/expired token handling
+  }
+}
+```
+
+**Key:** TestContainers spins up real MinIO. `@DynamicPropertySource` injects container endpoint. Full Spring context. Tests real HTTP → security → domain → adapter → storage flow.
 
 ---
 
@@ -585,18 +785,31 @@ public class StorageConfig { }
 
 | File | Purpose |
 |------|---------|
-| `ecs-core/ports/FileServicePort.java` | Inbound port (what REST calls) |
+| `ecs-core/ports/FileServicePort.java` | Inbound port (what REST calls) — now includes `upload(UserContext, ...)` overload |
 | `ecs-core/ports/StoragePort.java` | Outbound port (what adapters implement) |
-| `ecs-core/usecases/FileServiceImpl.java` | Core use case (pure domain logic) |
-| `ecs-inbound-adapters/rest/FileController.java` | REST controller (HTTP→domain) |
+| `ecs-core/ports/TokenExtractorPort.java` | Inbound port for Bearer token extraction & validation |
+| `ecs-core/domain/UserContext.java` | Immutable domain object representing authenticated user |
+| `ecs-core/domain/StorageObject.java` | Storage metadata (now includes `userId` field) |
+| `ecs-core/usecases/FileServiceImpl.java` | Core use case (pure domain logic, user-scoped file storage) |
+| `ecs-inbound-adapters/rest/FileController.java` | REST controller (HTTP↔domain), Bearer token extraction |
+| `ecs-inbound-adapters/rest/FileUploadValidator.java` | Input validation (file size, content checks) |
+| `ecs-inbound-adapters/security/BearerTokenExtractor.java` | Token extraction adapter (implements `TokenExtractorPort`) |
+| `ecs-inbound-adapters/security/BearerTokenAuthenticationFilter.java` | Spring Security filter for Bearer token interception & ThreadLocal storage |
+| `ecs-inbound-adapters/security/AuthorizationExtractor.java` | Utility to extract Bearer token from Authorization header |
+| `ecs-inbound-adapters/security/RequestContextHolder.java` | ThreadLocal-based context storage for request-scoped `UserContext` retrieval |
 | `ecs-outbound-adapters/storage/S3StorageAdapter.java` | Storage adapter (domain→SDK) |
-| `ecs-application/config/StorageConfiguration.java` | Wires ports & adapters |
+| `ecs-application/config/SecurityConfiguration.java` | Wires token extractor & security filter chain |
+| `ecs-application/config/StorageConfiguration.java` | Wires storage adapter based on profile |
+| `ecs-application/config/RateLimitConfiguration.java` | Configures rate limiting interceptor |
+| `ecs-application/config/WebMvcConfiguration.java` | Registers web MVC components (interceptors) |
+| `ecs-application/integration/SecurityTestConfiguration.java` | Test configuration disabling Spring Security for integration tests (allows Bearer token mocking) |
 | `ecs-tests/arch/HexagonalArchitectureTest.java` | Architecture enforcement (ArchUnit) |
 | `ecs-tests/unit/FileServiceImplTest.java` | Domain use case tests (no Spring) |
 | `ecs-tests/unit/FileControllerTest.java` | Adapter HTTP tests (MockMvc standalone) |
-| `ecs-application/integration/FileUploadIT.java` | End-to-end tests with real MinIO (in ecs-application, not ecs-tests) |
+| `ecs-application/integration/FileUploadIT.java` | End-to-end tests with real MinIO |
+| `ecs-application/integration/FileUploadWithIDMIT.java` | End-to-end tests with Bearer token authentication |
 
 ---
 
-**Last Updated:** July 22, 2026 · **Architecture:** Hexagonal · **Enforcement:** STRICT (ArchUnit)
+**Last Updated:** July 24, 2026 · **Architecture:** Hexagonal · **Enforcement:** STRICT (ArchUnit)
 
