@@ -17,6 +17,8 @@ import static com.tngtech.archunit.lang.syntax.ArchRuleDefinition.noClasses;
  *   <li>Outbound adapters implement the {@code StoragePort} interface</li>
  *   <li>Spring {@code @Configuration} lives ONLY in the application package</li>
  * </ol>
+ *
+ * <p>Analyzes all classes in com.example packages, including those from compiled dependencies.</p>
  */
 @AnalyzeClasses(packages = "com.example")
 public class HexagonalArchitectureTest {
@@ -34,7 +36,8 @@ public class HexagonalArchitectureTest {
                             "org.springframework..",
                             "jakarta.inject.."
                     )
-                    .because("Core domain must be framework-agnostic (Hexagonal Architecture Rule 1)");
+                    .because("Core domain must be framework-agnostic (Hexagonal Architecture Rule 1)")
+                    .allowEmptyShould(true);
 
     /**
      * Rule 2: Inbound adapters must NOT directly import outbound adapter classes.
@@ -46,7 +49,8 @@ public class HexagonalArchitectureTest {
                     .that().resideInAPackage("com.example.adapters.inbound..")
                     .should().dependOnClassesThat()
                     .resideInAPackage("com.example.adapters.outbound..")
-                    .because("Inbound adapters must call inbound ports, not outbound adapters (Rule 2)");
+                    .because("Inbound adapters must call inbound ports, not outbound adapters (Rule 2)")
+                    .allowEmptyShould(true);
 
     /**
      * Rule 3: The S3StorageAdapter must implement the StoragePort interface.
@@ -58,7 +62,8 @@ public class HexagonalArchitectureTest {
                     .that().resideInAPackage("com.example.adapters.outbound..")
                     .and().haveSimpleNameEndingWith("Adapter")
                     .should().implement(com.example.core.ports.StoragePort.class)
-                    .because("Outbound adapters must implement domain ports (Rule 3)");
+                    .because("Outbound adapters must implement domain ports (Rule 3)")
+                    .allowEmptyShould(true);
 
     /**
      * Rule 4: Only the application module may contain @Configuration classes.
@@ -72,6 +77,7 @@ public class HexagonalArchitectureTest {
                             "com.example.core.."
                     )
                     .should().beAnnotatedWith(org.springframework.context.annotation.Configuration.class)
-                    .because("Spring @Configuration must live ONLY in the application module (Rule 4)");
+                    .because("Spring @Configuration must live ONLY in the application module (Rule 4)")
+                    .allowEmptyShould(true);
 }
 

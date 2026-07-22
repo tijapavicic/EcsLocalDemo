@@ -14,8 +14,8 @@
 
     <artifactId>ecs-tests</artifactId>
     <packaging>jar</packaging>
-    <name>ECS Tests - All Test Suites</name>
-    <description>Unit, Integration, and Architecture tests.</description>
+    <name>ECS Tests - Unit &amp; Architecture Tests</name>
+    <description>Unit tests (no Spring) and architecture tests (ArchUnit). Integration tests live in ecs-application.</description>
 
     <dependencies>
         <!-- All modules under test -->
@@ -50,17 +50,6 @@
             <scope>test</scope>
         </dependency>
 
-        <!-- TestContainers for MinIO integration tests -->
-        <dependency>
-            <groupId>org.testcontainers</groupId>
-            <artifactId>testcontainers</artifactId>
-            <scope>test</scope>
-        </dependency>
-        <dependency>
-            <groupId>org.testcontainers</groupId>
-            <artifactId>junit-jupiter</artifactId>
-            <scope>test</scope>
-        </dependency>
 
         <!-- ArchUnit for hexagonal architecture enforcement -->
         <dependency>

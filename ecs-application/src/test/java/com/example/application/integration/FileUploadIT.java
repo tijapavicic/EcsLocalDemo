@@ -1,4 +1,4 @@
-package com.example.tests.integration;
+package com.example.application.integration;
 
 import com.example.application.Application;
 import com.example.core.domain.StorageObject;
@@ -39,6 +39,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * <p>TestContainers starts a real MinIO container. {@code @DynamicPropertySource}
  * overrides the S3 endpoint with the dynamic container port before Spring starts.</p>
+ *
+ * <p>Lives in {@code ecs-application} (not ecs-tests) because it requires
+ * the full Spring Boot application context. Unit/adapter tests live in ecs-tests.</p>
  */
 @Testcontainers
 @SpringBootTest(classes = Application.class, webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)

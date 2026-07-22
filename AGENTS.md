@@ -59,18 +59,20 @@ StoragePort (outbound port interface)
 
 **Example:** `S3StorageAdapter implements StoragePort` — wraps AWS SDK v2 calls, catches `S3Exception`, converts to domain `StorageException`.
 
-### `ecs-application/` — Configuration ONLY
+### `ecs-application/` — Configuration + Integration Tests
 - ✅ Define ALL @Configuration, @Bean definitions
 - ✅ Profile-based conditional beans
 - ✅ Wire adapters → ports → use cases
-- ❌ NO controllers, NO repositories, NO business logic
+- ✅ **Integration tests** that require full Spring context (TestContainers)
+- ❌ NO controllers, NO repositories, NO business logic (except configuration)
 
 **Example:** `StorageConfiguration` creates `S3Client` (MinIO vs AWS), instantiates `FileServiceImpl` with bucket name and `StoragePort` implementation.
 
-### `ecs-tests/` — ArchUnit + Unit + Integration
+### `ecs-tests/` — Unit & Architecture Tests (NO Spring Context)
 - ✅ `HexagonalArchitectureTest` enforces 4 rules on every build
-- ✅ Unit tests mock ports (no Spring context)
-- ✅ Integration tests use TestContainers (real MinIO/LocalStack)
+- ✅ Unit tests mock ports (no Spring context, fast feedback)
+- ✅ Adapter tests use MockMvc standalone (no full context)
+- ❌ NO integration tests (those belong in ecs-application)
 
 ---
 
@@ -165,7 +167,7 @@ Tested by `HexagonalArchitectureTest` — **build fails if any rule breaks**:
 
 ## 🧪 Testing Patterns
 
-### Unit Tests (No Spring)
+### Layer 1: Domain Unit Tests (No Spring)
 ```java
 @DisplayName("FileServiceImpl — unit tests")
 class FileServiceImplTest {
@@ -207,7 +209,61 @@ class FileServiceImplTest {
 
 **Key:** Mock the outbound port, test use case in isolation. No Spring context. Use AssertJ assertions and ArgumentCaptor.
 
-### Integration Tests (Real MinIO)
+### Layer 2: Adapter Tests (MockMvc Standalone — No Spring Context)
+```java
+@DisplayName("FileController — unit tests (standalone MockMvc)")
+class FileControllerTest {
+  private MockMvc mockMvc;
+  private FileServicePort fileService;
+  
+  @BeforeEach
+  void setUp() {
+    fileService = mock(FileServicePort.class);
+    mockMvc = MockMvcBuilders
+      .standaloneSetup(new FileController(fileService))
+      .build();
+  }
+  
+  @Test
+  @DisplayName("POST /api/files/upload — returns 201 with StorageObject JSON")
+  void upload_returns201_withStorageObjectBody() throws Exception {
+    StorageObject stored = new StorageObject(
+      "2024-01-15/abc-report.pdf", "demo-bucket",
+      "application/pdf", 1024L, Instant.now());
+    
+    when(fileService.upload(any(), any(), any())).thenReturn(stored);
+    
+    MockMultipartFile file = new MockMultipartFile(
+      "file", "report.pdf", "application/pdf", "PDF content".getBytes());
+    
+    mockMvc.perform(multipart("/api/files/upload").file(file))
+      .andExpect(status().isCreated())
+      .andExpect(jsonPath("$.key").value("2024-01-15/abc-report.pdf"))
+      .andExpect(jsonPath("$.bucket").value("demo-bucket"));
+  }
+  
+  @Test
+  @DisplayName("POST /api/files/upload — returns 500 when StorageException is thrown")
+  void upload_returns500_whenStorageExceptionThrown() throws Exception {
+    when(fileService.upload(any(), any(), any()))
+      .thenThrow(new StorageException("MinIO unreachable"));
+    
+    MockMultipartFile file = new MockMultipartFile(
+      "file", "file.txt", MediaType.TEXT_PLAIN_VALUE, "data".getBytes());
+    
+    mockMvc.perform(multipart("/api/files/upload").file(file))
+      .andExpect(status().isInternalServerError())
+      .andExpect(jsonPath("$.error").value("Storage operation failed"));
+  }
+}
+```
+
+**Key:** Standalone `MockMvcBuilders.standaloneSetup()` — NO Spring context needed. Tests HTTP serialization, deserialization, and exception mapping. Faster than integration tests; covers adapter concerns (multipart parsing, JSON responses, HTTP status codes).
+
+### Layer 3: Integration Tests (Real MinIO + Full Spring)
+
+**Location:** `ecs-application/src/test/` — Integration tests live with the application module, not in ecs-tests. This follows clean hexagonal architecture: tests that need the full Spring context belong where Spring starts.
+
 ```java
 @Testcontainers
 @SpringBootTest(classes = Application.class, webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
@@ -249,6 +305,45 @@ class FileUploadIT {
 ```
 
 **Key:** TestContainers spins up real MinIO. `@DynamicPropertySource` injects container endpoint. Full Spring context. Tests real HTTP → domain → adapter → storage flow.
+
+---
+
+### Test Strategy Summary
+
+| Layer | Tool | Spring Context | External Services | Speed | Purpose | Location |
+|-------|------|----|----|--------|---------|----------|
+| **Domain** | JUnit + Mockito | ❌ No | ❌ No | ⚡⚡⚡ Fast | Test use case logic in isolation | `ecs-tests/unit/` |
+| **Adapter** | MockMvc Standalone | ❌ No | ❌ No | ⚡⚡ Fast | Test HTTP layer (serialization, exception mapping, status codes) | `ecs-tests/unit/` |
+| **Integration** | TestContainers + Spring | ✅ Yes | ✅ Yes | 🐢 Slow | Test end-to-end: HTTP → domain → storage | **`ecs-application/integration/`** |
+
+---
+
+### Why Integration Tests Live in ecs-application
+
+**Architectural Principle:** Tests should live where the context they test is defined.
+
+- **Unit tests** (mocked, no Spring) → `ecs-tests/` ✅
+- **Adapter tests** (MockMvc standalone, no full context) → `ecs-tests/` ✅
+- **Integration tests** (require full Spring Boot context) → `ecs-application/` ✅
+
+This creates a **clean dependency flow**:
+```
+ecs-core (no dependencies except domain logic)
+  ↑
+ecs-inbound-adapters (depends on ecs-core)
+  ↑
+ecs-outbound-adapters (depends on ecs-core)
+  ↑
+ecs-application (depends on all adapters, wires everything, owns integration tests)
+  ↑
+ecs-tests (depends on all modules, runs unit/architecture tests)
+```
+
+**Benefits of this separation:**
+1. **ecs-tests** has minimal dependencies (no TestContainers) → faster builds
+2. **ecs-application** owns integration tests because it owns the full context
+3. **Clean POM structure** — no cross-dependencies between test modules
+4. **Hexagonal principle** — application module is the outermost layer, so integration tests belong there
 
 ---
 
@@ -496,9 +591,12 @@ public class StorageConfig { }
 | `ecs-inbound-adapters/rest/FileController.java` | REST controller (HTTP→domain) |
 | `ecs-outbound-adapters/storage/S3StorageAdapter.java` | Storage adapter (domain→SDK) |
 | `ecs-application/config/StorageConfiguration.java` | Wires ports & adapters |
-| `ecs-tests/arch/HexagonalArchitectureTest.java` | Architecture enforcement |
+| `ecs-tests/arch/HexagonalArchitectureTest.java` | Architecture enforcement (ArchUnit) |
+| `ecs-tests/unit/FileServiceImplTest.java` | Domain use case tests (no Spring) |
+| `ecs-tests/unit/FileControllerTest.java` | Adapter HTTP tests (MockMvc standalone) |
+| `ecs-application/integration/FileUploadIT.java` | End-to-end tests with real MinIO (in ecs-application, not ecs-tests) |
 
 ---
 
-**Last Updated:** July 21, 2026 · **Architecture:** Hexagonal · **Enforcement:** STRICT (ArchUnit)
+**Last Updated:** July 22, 2026 · **Architecture:** Hexagonal · **Enforcement:** STRICT (ArchUnit)
 
