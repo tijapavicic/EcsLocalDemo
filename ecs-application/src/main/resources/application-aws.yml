@@ -14,6 +14,21 @@ storage:
     access-key: ${AWS_ACCESS_KEY_ID:}
     secret-key: ${AWS_SECRET_ACCESS_KEY:}
 
+# OpenTelemetry: Distributed tracing configured via environment variables
+# In ECS task definition, set:
+#   OTEL_TRACES_EXPORTER=otlp  (or jaeger, awsxray, etc.)
+#   OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://collector:4317
+# Or use OpenTelemetry Java agent for auto-instrumentation
+
+management:
+  metrics:
+    export:
+      prometheus:
+        enabled: true
+  tracing:
+    sampling:
+      probability: 0.1  # Sample 10% of traces in production (reduce cost)
+
 logging:
   level:
     com.example.adapters.inbound.security: INFO

@@ -24,10 +24,21 @@ management:
   endpoints:
     web:
       exposure:
-        include: health,info
+        include: health,info,metrics,prometheus
   endpoint:
     health:
       show-details: always
+  # OpenTelemetry & Micrometer Configuration
+  metrics:
+    export:
+      prometheus:
+        enabled: true
+  tracing:
+    sampling:
+      probability: 1.0  # Sample 100% of traces (use 0.1 for 10% in production)
+    # Jaeger exporter can be configured here, or via environment variables
+    # OTEL_EXPORTER_JAEGER_ENDPOINT=http://localhost:14250 (gRPC)
+    # or OTEL_TRACES_EXPORTER=jaeger
 
 logging:
   level:

@@ -83,6 +83,20 @@
                 <artifactId>archunit-junit5</artifactId>
                 <version>${archunit.version}</version>
             </dependency>
+
+            <!-- OpenTelemetry & Observability -->
+            <!-- Prometheus metrics registry for /actuator/prometheus endpoint -->
+            <dependency>
+                <groupId>io.micrometer</groupId>
+                <artifactId>micrometer-registry-prometheus</artifactId>
+                <version>1.11.5</version>
+            </dependency>
+            <!-- OpenTelemetry API for distributed tracing instrumentation -->
+            <dependency>
+                <groupId>io.opentelemetry</groupId>
+                <artifactId>opentelemetry-api</artifactId>
+                <version>1.25.0</version>
+            </dependency>
         </dependencies>
     </dependencyManagement>
 

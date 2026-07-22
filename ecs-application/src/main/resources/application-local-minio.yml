@@ -14,6 +14,11 @@ storage:
     access-key: minioadmin
     secret-key: minioadmin
 
+# OpenTelemetry: Tracing configured via:
+#   - Environment variables (OTEL_TRACES_EXPORTER, OTEL_EXPORTER_OTLP_ENDPOINT)
+#   - Java agent: -javaagent:opentelemetry-javaagent.jar
+#   (see plan.md for detailed setup instructions)
+
 logging:
   level:
     com.example.adapters.inbound.security: DEBUG
