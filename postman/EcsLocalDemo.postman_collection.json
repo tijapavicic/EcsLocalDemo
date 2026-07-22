@@ -1,8 +1,8 @@
 {
   "info": {
     "_postman_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
-    "name": "ECS Local Demo — MinIO File Upload",
-    "description": "Manual testing collection for the ECS Local Demo app running with the local-minio profile.\n\nPrerequisites:\n1. Run `docker compose up -d` to start MinIO + app\n2. Wait until both services are healthy\n3. Use the requests below",
+    "name": "ECS Local Demo — MinIO File Upload with IDM",
+    "description": "Manual testing collection for the ECS Local Demo app with Identity and Access Management (IDM).\n\nPrerequisites:\n1. Run `docker compose up -d` to start MinIO + app\n2. Wait until both services are healthy\n3. Set Bearer token variables (see Variables tab)\n4. Use the requests below\n\nIDM Features:\n- Bearer token authentication from Authorization header\n- User-scoped file paths: users/{userId}/yyyy-MM-dd/filename\n- userId included in all responses for audit trail",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
@@ -11,11 +11,35 @@
       "value": "http://localhost:8080",
       "type": "string",
       "description": "Base URL of the running app. Change to your server URL if deployed remotely."
+    },
+    {
+      "key": "user1_token",
+      "value": "dXNlcjEyMzp1c2VyQGV4YW1wbGUuY29t",
+      "type": "string",
+      "description": "Bearer token for user1 (Base64: user123:user@example.com)"
+    },
+    {
+      "key": "user2_token",
+      "value": "anNvbjp0ZXN0QGV4YW1wbGUuY29t",
+      "type": "string",
+      "description": "Bearer token for user2 (Base64: json:test@example.com)"
+    },
+    {
+      "key": "user3_token",
+      "value": "ZGV2ZWxvcGVyOmRldkBleGFtcGxlLmNvbQ==",
+      "type": "string",
+      "description": "Bearer token for user3 (Base64: developer:dev@example.com)"
+    },
+    {
+      "key": "custom_token",
+      "value": "dXNlcm5hbWU6ZW1haWxAZXhhbXBsZS5jb20=",
+      "type": "string",
+      "description": "Custom Bearer token - modify this for testing. Format: Base64(userId:email)"
     }
   ],
   "item": [
     {
-      "name": "Health Check",
+      "name": "1️⃣ Health Check",
       "request": {
         "method": "GET",
         "header": [],
@@ -24,7 +48,7 @@
           "host": ["{{baseUrl}}"],
           "path": ["actuator", "health"]
         },
-        "description": "Verify the application is running and healthy.\nExpected: 200 OK with {\"status\": \"UP\"}"
+        "description": "Verify the application is running and healthy.\nNo authentication required (public endpoint).\n\nExpected: 200 OK with {\"status\": \"UP\"}"
       },
       "response": [
         {
@@ -40,10 +64,17 @@
       ]
     },
     {
-      "name": "Upload File",
+      "name": "2️⃣ Upload File (User 1 - With Bearer Token)",
       "request": {
         "method": "POST",
-        "header": [],
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{user1_token}}",
+            "type": "text",
+            "description": "Bearer token extracted from Authorization header"
+          }
+        ],
         "body": {
           "mode": "formdata",
           "formdata": [
@@ -60,13 +91,19 @@
           "host": ["{{baseUrl}}"],
           "path": ["api", "files", "upload"]
         },
-        "description": "Upload a file to MinIO S3-compatible storage.\n\nSteps:\n1. Click 'Body' tab → 'form-data'\n2. Set the 'file' field type to 'File'\n3. Click 'Select Files' and pick any file\n4. Send\n\nExpected response: 201 Created\n```json\n{\n  \"key\": \"2024-01-15/abc12345-your-file.pdf\",\n  \"bucket\": \"demo-bucket\",\n  \"contentType\": \"application/pdf\",\n  \"sizeBytes\": 12345,\n  \"uploadedAt\": \"2024-01-15T10:30:00Z\"\n}\n```\n\nYou can then verify the file exists in MinIO Console: http://localhost:9001"
+        "description": "✅ SUCCESS CASE: Upload a file with Bearer token authentication.\n\nSteps:\n1. Go to 'Headers' tab\n2. Verify Authorization header: Bearer {{user1_token}}\n3. Go to 'Body' tab → 'form-data'\n4. Set the 'file' field type to 'File'\n5. Click 'Select Files' and pick any file\n6. Click 'Send'\n\nExpected response: 201 Created\n```json\n{\n  \"key\": \"users/user123/2024-07-22/uuid-filename.pdf\",\n  \"bucket\": \"demo-bucket\",\n  \"contentType\": \"application/pdf\",\n  \"sizeBytes\": 12345,\n  \"uploadedAt\": \"2024-07-22T07:30:00Z\",\n  \"userId\": \"user123\"\n}\n```\n\nFile Path: users/user123/ (user-scoped)\nVerify in MinIO: http://localhost:9001"
       },
       "response": [
         {
           "name": "Success - 201 Created",
           "originalRequest": {
             "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer dXNlcjEyMzp1c2VyQGV4YW1wbGUuY29t"
+              }
+            ],
             "body": {
               "mode": "formdata",
               "formdata": [{ "key": "file", "type": "file", "src": "" }]
@@ -75,32 +112,71 @@
           },
           "status": "Created",
           "code": 201,
-          "body": "{\n  \"key\": \"2024-01-15/a3f1b2c4-example.pdf\",\n  \"bucket\": \"demo-bucket\",\n  \"contentType\": \"application/pdf\",\n  \"sizeBytes\": 8192,\n  \"uploadedAt\": \"2024-01-15T10:30:00.000Z\"\n}"
-        },
-        {
-          "name": "Error - 400 Bad Request (empty file)",
-          "originalRequest": {
-            "method": "POST",
-            "url": { "raw": "{{baseUrl}}/api/files/upload" }
-          },
-          "status": "Bad Request",
-          "code": 400,
-          "body": ""
-        },
-        {
-          "name": "Error - 500 Internal Server Error (storage failure)",
-          "originalRequest": {
-            "method": "POST",
-            "url": { "raw": "{{baseUrl}}/api/files/upload" }
-          },
-          "status": "Internal Server Error",
-          "code": 500,
-          "body": "{\n  \"error\": \"Storage operation failed\",\n  \"detail\": \"S3 connection refused\"\n}"
+          "body": "{\n  \"key\": \"users/user123/2024-07-22/a3f1b2c4-example.pdf\",\n  \"bucket\": \"demo-bucket\",\n  \"contentType\": \"application/pdf\",\n  \"sizeBytes\": 8192,\n  \"uploadedAt\": \"2024-07-22T07:30:00.000Z\",\n  \"userId\": \"user123\"\n}"
         }
       ]
     },
     {
-      "name": "Upload File (curl equivalent)",
+      "name": "3️⃣ Upload File (User 2 - Different User)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{user2_token}}",
+            "type": "text"
+          }
+        ],
+        "body": {
+          "mode": "formdata",
+          "formdata": [
+            {
+              "key": "file",
+              "type": "file",
+              "src": "",
+              "description": "Select a file to test user isolation"
+            }
+          ]
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/files/upload",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "files", "upload"]
+        },
+        "description": "✅ USER ISOLATION TEST: Upload file as a different user.\n\nVerify:\n1. Response includes userId: \"json\" (not \"user123\")\n2. File is stored in users/json/ folder (not users/user123/)\n3. Different users have isolated storage\n\nToken: {{user2_token}} = Base64(json:test@example.com)"
+      }
+    },
+    {
+      "name": "4️⃣ Upload File (User 3 - Third User)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{user3_token}}",
+            "type": "text"
+          }
+        ],
+        "body": {
+          "mode": "formdata",
+          "formdata": [
+            {
+              "key": "file",
+              "type": "file",
+              "src": ""
+            }
+          ]
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/files/upload",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "files", "upload"]
+        },
+        "description": "More user testing. Token: {{user3_token}} = Base64(developer:dev@example.com)"
+      }
+    },
+    {
+      "name": "❌ Error: Missing Authorization Header",
       "request": {
         "method": "POST",
         "header": [],
@@ -110,8 +186,7 @@
             {
               "key": "file",
               "type": "file",
-              "src": "",
-              "description": "Equivalent curl: curl -X POST http://localhost:8080/api/files/upload -F 'file=@/path/to/file.txt'"
+              "src": ""
             }
           ]
         },
@@ -120,7 +195,180 @@
           "host": ["{{baseUrl}}"],
           "path": ["api", "files", "upload"]
         },
-        "description": "Same endpoint — included as a reminder of the curl equivalent:\n```\ncurl -X POST http://localhost:8080/api/files/upload \\\n     -F 'file=@/path/to/your/file.txt'\n```"
+        "description": "❌ ERROR CASE: Missing Authorization header.\n\nExpected: 400 Bad Request\nError: \"Authorization header is missing\"\n\nFix: Add Authorization header with valid Bearer token"
+      },
+      "response": [
+        {
+          "name": "Error - 400 Missing Header",
+          "originalRequest": {
+            "method": "POST",
+            "url": { "raw": "{{baseUrl}}/api/files/upload" }
+          },
+          "status": "Bad Request",
+          "code": 400,
+          "body": ""
+        }
+      ]
+    },
+    {
+      "name": "❌ Error: Invalid Bearer Token (Not Base64)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer invalid_token_not_base64",
+            "type": "text"
+          }
+        ],
+        "body": {
+          "mode": "formdata",
+          "formdata": [
+            {
+              "key": "file",
+              "type": "file",
+              "src": ""
+            }
+          ]
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/files/upload",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "files", "upload"]
+        },
+        "description": "❌ ERROR CASE: Invalid Bearer token (not valid Base64).\n\nExpected: 400 Bad Request\nError: \"Invalid token encoding\"\n\nFix: Ensure token is valid Base64-encoded userId:email"
+      }
+    },
+    {
+      "name": "❌ Error: Malformed Token (Missing Colon)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer anRzdGluZ3Bhc3N3b3Jk",
+            "type": "text",
+            "description": "Base64(justauserwithoutcolon)"
+          }
+        ],
+        "body": {
+          "mode": "formdata",
+          "formdata": [
+            {
+              "key": "file",
+              "type": "file",
+              "src": ""
+            }
+          ]
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/files/upload",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "files", "upload"]
+        },
+        "description": "❌ ERROR CASE: Token without colon separator.\n\nExpected: 400 Bad Request\nError: \"Invalid token format\"\n\nFix: Use format Base64(userId:email)"
+      }
+    },
+    {
+      "name": "❌ Error: Empty Bearer Token",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer ",
+            "type": "text"
+          }
+        ],
+        "body": {
+          "mode": "formdata",
+          "formdata": [
+            {
+              "key": "file",
+              "type": "file",
+              "src": ""
+            }
+          ]
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/files/upload",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "files", "upload"]
+        },
+        "description": "❌ ERROR CASE: Empty Bearer token.\n\nExpected: 400 Bad Request\nError: \"Bearer token is empty\"\n\nFix: Provide valid Base64 token after 'Bearer '"
+      }
+    },
+    {
+      "name": "❌ Error: Wrong Authorization Prefix",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Basic {{user1_token}}",
+            "type": "text",
+            "description": "Uses 'Basic' instead of 'Bearer'"
+          }
+        ],
+        "body": {
+          "mode": "formdata",
+          "formdata": [
+            {
+              "key": "file",
+              "type": "file",
+              "src": ""
+            }
+          ]
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/files/upload",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "files", "upload"]
+        },
+        "description": "❌ ERROR CASE: Using 'Basic' instead of 'Bearer' prefix.\n\nExpected: 400 Bad Request\nError: \"Authorization header must start with 'Bearer '\"\n\nFix: Use 'Bearer ' prefix before token"
+      }
+    },
+    {
+      "name": "❌ Error: Empty File Upload",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{user1_token}}",
+            "type": "text"
+          }
+        ],
+        "body": {
+          "mode": "formdata",
+          "formdata": [
+            {
+              "key": "file",
+              "type": "file",
+              "src": "",
+              "description": "Don't select a file, or select an empty file"
+            }
+          ]
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/files/upload",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "files", "upload"]
+        },
+        "description": "❌ ERROR CASE: Empty file upload.\n\nExpected: 400 Bad Request\nError: \"file is empty\"\n\nFix: Select a file with content"
+      }
+    },
+    {
+      "name": "📋 Generate Bearer Token (Base64 Encoder Guide)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "https://www.base64encode.org/",
+          "protocol": "https",
+          "host": ["www", "base64encode", "org"]
+        },
+        "description": "Guide: How to create custom Bearer tokens.\n\n1. Go to https://www.base64encode.org/\n2. Enter: userId:email (e.g., john:john@example.com)\n3. Copy the Base64 output\n4. In Postman, create new header: Authorization: Bearer <output>\n\nOr use command line:\n```bash\necho -n \"john:john@example.com\" | base64\n# Output: am9objpqb2huQGV4YW1wbGUuY29t\n# Usage: Authorization: Bearer am9objpqb2huQGV4YW1wbGUuY29t\n```\n\nPre-configured tokens in Variables:\n- user1_token = user123:user@example.com\n- user2_token = json:test@example.com\n- user3_token = developer:dev@example.com"
       }
     }
   ]
