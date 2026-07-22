@@ -1,7 +1,8 @@
 # 📦 EcsLocalDemo — Code Walkthrough
 
 > **A multi-cloud S3 file upload service built with Hexagonal Architecture**  
-> Stack: Java 17 · Spring Boot 3.1.7 · AWS SDK v2 · MinIO · Docker · ArchUnit
+> Stack: Java 21 · Spring Boot 3.1.7 · AWS SDK v2 · MinIO · Docker · ArchUnit  
+> **NEW:** Bearer Token IDM (Identity & Access Management) with user-scoped storage
 
 ---
 
@@ -11,14 +12,15 @@
 2. [Project Structure](#2-project-structure)
 3. [The Request Journey — Step by Step](#3-the-request-journey--step-by-step)
 4. [Core Domain — Zero Spring](#4-core-domain--zero-spring)
-5. [Inbound Adapter — REST Controller](#5-inbound-adapter--rest-controller)
-6. [Outbound Adapter — S3 Storage](#6-outbound-adapter--s3-storage)
-7. [Application Wiring — Configuration](#7-application-wiring--configuration)
-8. [Profile Switching — Local vs AWS](#8-profile-switching--local-vs-aws)
-9. [Architecture Enforcement — ArchUnit](#9-architecture-enforcement--archunit)
-10. [Testing Strategy — Three Layers](#10-testing-strategy--three-layers)
-11. [Running Locally](#11-running-locally)
-12. [Key Design Decisions](#12-key-design-decisions)
+5. [IDM & Bearer Token Authentication](#5-idm--bearer-token-authentication) ✨ NEW
+6. [Inbound Adapter — REST Controller](#6-inbound-adapter--rest-controller)
+7. [Outbound Adapter — S3 Storage](#7-outbound-adapter--s3-storage)
+8. [Application Wiring — Configuration](#8-application-wiring--configuration)
+9. [Profile Switching — Local vs AWS](#9-profile-switching--local-vs-aws)
+10. [Architecture Enforcement — ArchUnit](#10-architecture-enforcement--archunit)
+11. [Testing Strategy — Three Layers](#11-testing-strategy--three-layers)
+12. [Running Locally](#12-running-locally)
+13. [Key Design Decisions](#13-key-design-decisions)
 
 ---
 
@@ -85,16 +87,22 @@ ecs-local-demo/
 │   └── src/main/java/com/example/core/
 │       ├── domain/
 │       │   ├── StorageObject.java   # Value object (Lombok @Value)
+│       │   ├── UserContext.java     # ✨ NEW: User identity holder
 │       │   └── StorageException.java
 │       ├── ports/
 │       │   ├── FileServicePort.java # Inbound port interface
-│       │   └── StoragePort.java     # Outbound port interface
+│       │   ├── StoragePort.java     # Outbound port interface
+│       │   └── TokenExtractorPort.java # ✨ NEW: IDM port
 │       └── usecases/
 │           └── FileServiceImpl.java # Core business logic
 │
-├── ecs-inbound-adapters/            # 🌐 REST layer
-│   └── ...rest/
-│       └── FileController.java
+├── ecs-inbound-adapters/            # 🌐 REST + Security
+│   ├── rest/
+│   │   └── FileController.java
+│   └── security/
+│       ├── BearerTokenAuthenticationFilter.java
+│       ├── RequestContextHolder.java
+│       └── BearerTokenExtractor.java
 │
 ├── ecs-outbound-adapters/           # 💾 Storage layer
 │   └── ...storage/
@@ -124,14 +132,16 @@ ecs-local-demo/
 
 ## 3. The Request Journey — Step by Step
 
-A `POST /api/files/upload` request travels through **5 distinct layers**:
+A `POST /api/files/upload` request with Bearer token travels through **6 distinct layers**:
 
 ```
-Step 1  →  HTTP arrives at FileController
-Step 2  →  Controller calls FileServicePort.upload()
-Step 3  →  FileServiceImpl generates key, calls StoragePort.store()
-Step 4  →  S3StorageAdapter uploads to AWS S3 / MinIO
-Step 5  →  StorageObject returned back up the chain → 201 Created
+Step 0  →  BearerTokenAuthenticationFilter intercepts request
+Step 1  →  Extract & validate Bearer token from Authorization header
+Step 2  →  HTTP arrives at FileController with UserContext
+Step 3  →  Controller calls FileServicePort.upload(userContext, ...)
+Step 4  →  FileServiceImpl generates user-scoped key, calls StoragePort.store()
+Step 5  →  S3StorageAdapter uploads to AWS S3 / MinIO
+Step 6  →  StorageObject (with userId) returned back up the chain → 201 Created
 ```
 
 Let's trace each step through the actual code.
@@ -247,7 +257,7 @@ public class FileServiceImpl implements FileServicePort {
 
 **Key observations:**
 | Feature | Detail |
-|---------|--------|
+| Feature | Detail |
 | No `@Service` | Instantiated by Spring config, not component scan |
 | No `@Autowired` | Pure constructor injection |
 | Validates early | Guard clauses before any I/O |
@@ -256,7 +266,220 @@ public class FileServiceImpl implements FileServicePort {
 
 ---
 
-## 5. Inbound Adapter — REST Controller
+## 5. IDM & Bearer Token Authentication ✨ NEW
+
+### `UserContext.java` — user identity holder
+
+```java
+// ecs-core/domain/UserContext.java
+@Value
+public class UserContext {
+    String userId;      // e.g. "alice"
+    String email;       // e.g. "alice@example.com"
+    String token;       // Bearer token from Authorization header
+}
+```
+
+> Immutable context carrying authenticated user information through the request.
+
+---
+
+### `TokenExtractorPort.java` — inbound port for auth
+
+```java
+// ecs-core/ports/TokenExtractorPort.java
+public interface TokenExtractorPort {
+
+    /**
+     * Extract and validate user context from a Bearer token.
+     * Token format: Base64(userId:email)
+     * 
+     * @throws TokenValidationException if token is invalid
+     */
+    UserContext extractUserContext(String bearerToken) throws TokenValidationException;
+
+    /**
+     * Check if a token is valid (syntactically correct).
+     */
+    boolean isTokenValid(String bearerToken);
+}
+```
+
+---
+
+### `BearerTokenAuthenticationFilter.java` — Spring Security filter
+
+```java
+// ecs-inbound-adapters/security/BearerTokenAuthenticationFilter.java
+@Component
+public class BearerTokenAuthenticationFilter extends OncePerRequestFilter {
+
+    private final TokenExtractorPort tokenExtractor;
+
+    public BearerTokenAuthenticationFilter(TokenExtractorPort tokenExtractor) {
+        this.tokenExtractor = tokenExtractor;
+    }
+
+    @Override
+    protected void doFilterInternal(HttpServletRequest request, 
+                                   HttpServletResponse response, 
+                                   FilterChain filterChain) 
+            throws ServletException, IOException {
+        try {
+            // ① Extract Authorization header
+            String authHeader = request.getHeader("Authorization");
+            
+            if (authHeader != null && authHeader.startsWith("Bearer ")) {
+                // ② Extract and validate Bearer token
+                String token = authHeader.substring(7);  // Remove "Bearer " prefix
+                UserContext userContext = tokenExtractor.extractUserContext(token);
+                
+                // ③ Store in ThreadLocal for request lifetime
+                RequestContextHolder.set(userContext);
+                
+                log.debug("Bearer token authenticated: userId={}", userContext.getUserId());
+            }
+        } finally {
+            // ④ Clean up ThreadLocal (prevent leaks in servlet container pools)
+            filterChain.doFilter(request, response);
+            RequestContextHolder.clear();
+        }
+    }
+}
+```
+
+> **Key feature:** Filter runs ONCE per request, extracts Bearer token, validates it, and stores UserContext in ThreadLocal.
+
+---
+
+### `RequestContextHolder.java` — thread-safe context storage
+
+```java
+// ecs-inbound-adapters/security/RequestContextHolder.java
+public class RequestContextHolder {
+    
+    private static final ThreadLocal<UserContext> contextHolder = new ThreadLocal<>();
+
+    public static void set(UserContext context) {
+        contextHolder.set(context);
+    }
+
+    public static UserContext get() {
+        UserContext context = contextHolder.get();
+        if (context == null) {
+            throw new IllegalStateException("UserContext not set in ThreadLocal");
+        }
+        return context;
+    }
+
+    public static void clear() {
+        contextHolder.remove();
+    }
+}
+```
+
+> Provides thread-safe access to UserContext for the duration of the request.
+
+---
+
+### `BearerTokenExtractor.java` — token validation implementation
+
+```java
+// ecs-inbound-adapters/security/BearerTokenExtractor.java
+@Component
+public class BearerTokenExtractor implements TokenExtractorPort {
+
+    @Override
+    public UserContext extractUserContext(String bearerToken) throws TokenValidationException {
+        if (bearerToken == null || bearerToken.isBlank()) {
+            throw new TokenValidationException("Bearer token is empty");
+        }
+
+        try {
+            // ① Decode Base64
+            String decoded = new String(Base64.getDecoder().decode(bearerToken));
+            
+            // ② Parse userId:email format
+            String[] parts = decoded.split(":");
+            if (parts.length != 2) {
+                throw new TokenValidationException("Invalid token format");
+            }
+            
+            String userId = parts[0].trim();
+            String email = parts[1].trim();
+            
+            if (userId.isBlank() || email.isBlank()) {
+                throw new TokenValidationException("userId or email is blank");
+            }
+            
+            return new UserContext(userId, email, bearerToken);
+            
+        } catch (IllegalArgumentException ex) {
+            throw new TokenValidationException("Invalid token encoding", ex);
+        }
+    }
+
+    @Override
+    public boolean isTokenValid(String bearerToken) {
+        try {
+            extractUserContext(bearerToken);
+            return true;
+        } catch (TokenValidationException ex) {
+            return false;
+        }
+    }
+}
+```
+
+---
+
+### `StorageObject.java` — now includes userId
+
+```java
+// ecs-core/domain/StorageObject.java
+@Value
+public class StorageObject {
+
+    @JsonProperty("key")
+    String key;                 // e.g. "users/alice/2024-07-22/uuid-file.pdf"
+
+    @JsonProperty("bucket")
+    String bucket;
+
+    @JsonProperty("contentType")
+    String contentType;
+
+    @JsonProperty("sizeBytes")
+    long sizeBytes;
+
+    @JsonProperty("uploadedAt")
+    Instant uploadedAt;
+    
+    @JsonProperty("userId")
+    String userId;              // ← NEW: audit trail
+}
+```
+
+---
+
+### User-Scoped File Paths
+
+**Before:** Files stored at global path
+```
+s3://demo-bucket/2024-07-22/uuid-filename.pdf
+```
+
+**After:** Files scoped to user
+```
+s3://demo-bucket/users/alice/2024-07-22/uuid-filename.pdf
+s3://demo-bucket/users/bob/2024-07-22/uuid-filename.pdf
+```
+
+> Each user's files are isolated in their own prefix, preventing accidental cross-user access.
+
+---
+
+## 6. Inbound Adapter — REST Controller
 
 ```java
 // ecs-inbound-adapters/rest/FileController.java
@@ -322,7 +545,7 @@ public class FileController {
 
 ---
 
-## 6. Outbound Adapter — S3 Storage
+## 7. Outbound Adapter — S3 Storage
 
 ```java
 // ecs-outbound-adapters/storage/S3StorageAdapter.java
@@ -389,7 +612,7 @@ public class S3StorageAdapter implements StoragePort {
 
 ---
 
-## 7. Application Wiring — Configuration
+## 8. Application Wiring — Configuration
 
 This is the **only place** where Spring wires the whole system together:
 
@@ -435,6 +658,51 @@ public class StorageConfiguration {
 
 ---
 
+### `SecurityConfiguration.java` — Bearer Token Filter Setup ✨ NEW
+
+```java
+// ecs-application/config/SecurityConfiguration.java
+@Configuration
+@EnableWebSecurity
+public class SecurityConfiguration {
+
+    // ① Create TokenExtractor bean (no Spring dependency in ecs-inbound-adapters)
+    @Bean
+    public TokenExtractorPort tokenExtractor() {
+        return new BearerTokenExtractor();
+    }
+
+    // ② Create Bearer token authentication filter
+    @Bean
+    public BearerTokenAuthenticationFilter bearerTokenAuthenticationFilter(
+            TokenExtractorPort tokenExtractor) {
+        return new BearerTokenAuthenticationFilter(tokenExtractor);
+    }
+
+    // ③ Configure Spring Security filter chain
+    @Bean
+    public SecurityFilterChain filterChain(HttpSecurity http,
+                                          BearerTokenAuthenticationFilter bearerFilter) throws Exception {
+        http
+                .csrf().disable()
+                .sessionManagement().sessionCreationPolicy(SessionCreationPolicy.STATELESS)
+                .and()
+                .authorizeRequests()
+                    .antMatchers("/actuator/**").permitAll()
+                    .antMatchers("/api/files/**").authenticated()
+                    .anyRequest().permitAll()
+                .and()
+                .addFilterBefore(bearerFilter, UsernamePasswordAuthenticationFilter.class);
+
+        return http.build();
+    }
+}
+```
+
+> Filter added BEFORE UsernamePasswordAuthenticationFilter → runs on all requests, extracts Bearer tokens.
+
+---
+
 ### `S3Configuration.java` — YAML bridge
 
 ```java
@@ -453,7 +721,7 @@ Spring binds these fields from whichever `application-{profile}.yml` is active.
 
 ---
 
-## 8. Profile Switching — Local vs AWS
+## 9. Profile Switching — Local vs AWS
 
 ### Local MinIO (`application-local-minio.yml`)
 
@@ -507,7 +775,7 @@ if (cfg.getEndpoint() != null && !cfg.getEndpoint().isBlank()) {
 
 ---
 
-## 9. Architecture Enforcement — ArchUnit
+## 10. Architecture Enforcement — ArchUnit
 
 ArchUnit tests run on every `mvn test` build and **fail the build** if any rule is violated.
 
@@ -566,7 +834,7 @@ BUILD FAILURE
 
 ---
 
-## 10. Testing Strategy — Three Layers
+## 11. Testing Strategy — Three Layers
 
 ### Layer 1 — Unit Tests (No Spring context)
 
@@ -749,7 +1017,7 @@ class FileUploadIT {
 
 ---
 
-## 11. Running Locally
+## 12. Running Locally
 
 ### Prerequisites
 
@@ -778,7 +1046,12 @@ mvn spring-boot:run \
 ### Upload a File
 
 ```bash
+# Create Bearer token: Base64(userId:email)
+TOKEN=$(echo -n "alice:alice@example.com" | base64)
+
+# Upload with Bearer token authentication
 curl -X POST http://localhost:8080/api/files/upload \
+  -H "Authorization: Bearer $TOKEN" \
   -F "file=@./pom.xml" \
   -H "Accept: application/json"
 ```
@@ -786,12 +1059,25 @@ curl -X POST http://localhost:8080/api/files/upload \
 **Response:**
 ```json
 {
-  "key": "2024-01-15/3f4a1b2c-pom.xml",
+  "key": "users/alice/2024-07-22/3f4a1b2c-pom.xml",
   "bucket": "demo-bucket",
   "contentType": "application/xml",
   "sizeBytes": 2847,
-  "uploadedAt": "2024-01-15T10:30:45Z"
+  "uploadedAt": "2024-07-22T10:30:45Z",
+  "userId": "alice"
 }
+```
+
+> Note the file is now stored in `users/alice/...` — user-scoped path!
+
+### Test Without Bearer Token (Should Fail)
+
+```bash
+# Missing Authorization header
+curl -X POST http://localhost:8080/api/files/upload \
+  -F "file=@./pom.xml"
+
+# Response: 400 Bad Request
 ```
 
 ### Run All Tests
@@ -807,7 +1093,7 @@ mvn verify
 
 ---
 
-## 12. Key Design Decisions
+## 13. Key Design Decisions
 
 ### ① Why Hexagonal Architecture?
 
@@ -881,18 +1167,64 @@ This is cleaner than `@TestPropertySource` because the port isn't known until ru
 
 ---
 
+### ⑥ Why Bearer Token Authentication in Core (IDM) ✨ NEW
+
+```
+❌ Tempting mistake: Store token extraction logic in the REST controller
+✅ Correct: Define TokenExtractorPort in core, implement in adapter, use in Spring filter
+```
+
+**Reason:** The core domain (use cases) needs to know about UserContext, not HTTP headers.  
+By defining the port in core, we make authentication a domain concern, not a web concern.
+
+**Benefits:**
+- ✅ Core domain knows who is making the request (UserContext)
+- ✅ Use cases can generate user-scoped keys (`users/{userId}/...`)
+- ✅ Spring Security filter is just an adapter (can be swapped)
+- ✅ Core logic testable without web context
+
+---
+
+### ⑦ Why ThreadLocal for UserContext?
+
+```java
+// ✅ BearerTokenAuthenticationFilter stores in ThreadLocal
+RequestContextHolder.set(userContext);
+
+// ✅ FileServiceImpl retrieves from ThreadLocal
+UserContext user = RequestContextHolder.get();
+```
+
+**Why not pass UserContext as a parameter?**  
+- ServiceImpl already has many parameters (StoragePort, bucket, filename, contentType, content)
+- Adding UserContext would couple the request context to method signatures
+- ThreadLocal keeps context implicit across the request lifetime
+
+**ThreadLocal pitfalls:**
+- Must be cleared in finally block → prevents leaks in servlet thread pools
+- Works only for single-threaded request handling (standard servlet model)
+- Not suitable for reactive/async code (would need ContextLocal or similar)
+
+---
+
 ## 📋 Quick Reference
 
 | Component | Location | Role |
 |-----------|----------|------|
 | `StorageObject` | `ecs-core/domain` | Immutable result value object |
+| `UserContext` | `ecs-core/domain` | ✨ User identity holder |
 | `StorageException` | `ecs-core/domain` | Checked domain exception |
 | `FileServicePort` | `ecs-core/ports` | Inbound port (REST → domain) |
 | `StoragePort` | `ecs-core/ports` | Outbound port (domain → storage) |
+| `TokenExtractorPort` | `ecs-core/ports` | ✨ IDM port (token validation) |
 | `FileServiceImpl` | `ecs-core/usecases` | Core use case, no Spring |
 | `FileController` | `ecs-inbound-adapters` | REST endpoint, delegates to port |
+| `BearerTokenAuthenticationFilter` | `ecs-inbound-adapters` | ✨ Spring Security filter for IDM |
+| `RequestContextHolder` | `ecs-inbound-adapters` | ✨ ThreadLocal context storage |
+| `BearerTokenExtractor` | `ecs-inbound-adapters` | ✨ Token validation implementation |
 | `S3StorageAdapter` | `ecs-outbound-adapters` | AWS SDK, implements StoragePort |
 | `StorageConfiguration` | `ecs-application/config` | Spring bean wiring, ONLY here |
+| `SecurityConfiguration` | `ecs-application/config` | ✨ Spring Security filter config |
 | `S3Configuration` | `ecs-application/config` | YAML → Java config binding |
 | `HexagonalArchitectureTest` | `ecs-tests/arch` | ArchUnit rule enforcement |
 | `FileServiceImplTest` | `ecs-tests/unit` | Pure unit tests, no Spring |
@@ -901,5 +1233,5 @@ This is cleaner than `@TestPropertySource` because the port isn't known until ru
 
 ---
 
-*Generated: July 21, 2026 · EcsLocalDemo v1.0.0 · Hexagonal Architecture*
+*Generated: July 22, 2026 · EcsLocalDemo v1.0.0 · Hexagonal Architecture with IDM*
 

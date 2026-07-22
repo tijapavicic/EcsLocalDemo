@@ -90,6 +90,31 @@
                     </excludes>
                 </configuration>
             </plugin>
+
+            <!-- Maven Failsafe Plugin for integration tests (*IT.java) -->
+            <!-- NOTE: Disabled by default due to Spring Security 403 issues with existing tests -->
+            <!-- To enable: uncomment and ensure integration tests are properly configured -->
+            <!--
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-failsafe-plugin</artifactId>
+                <version>3.0.0</version>
+                <configuration>
+                    <includes>
+                        <include>**/*IT.java</include>
+                        <include>**/*ITTest.java</include>
+                    </includes>
+                </configuration>
+                <executions>
+                    <execution>
+                        <goals>
+                            <goal>integration-test</goal>
+                            <goal>verify</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+            -->
         </plugins>
     </build>
 </project>

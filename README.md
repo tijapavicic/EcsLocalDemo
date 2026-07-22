@@ -5,6 +5,8 @@
 Upload files to AWS S3 or a local MinIO instance via a single REST endpoint.  
 Switch cloud providers by changing a Spring profile — zero code changes required.
 
+**✨ NEW:** Bearer token authentication with user-scoped file storage (IDM)
+
 ---
 
 ## Table of Contents
@@ -16,6 +18,7 @@ Switch cloud providers by changing a Spring profile — zero code changes requir
 - [Prerequisites](#prerequisites)
 - [Quick Start — Local MinIO](#quick-start--local-minio)
 - [API Reference](#api-reference)
+- [IDM & Bearer Token Authentication](#idm--bearer-token-authentication) ✨ NEW
 - [Configuration](#configuration)
 - [Running Tests](#running-tests)
 - [Docker](#docker)
@@ -81,10 +84,11 @@ HTTP Request
 
 | Category | Technology |
 |----------|-----------|
-| Language | Java 17 |
-| Framework | Spring Boot 3.1.7 |
+| Language | Java 21 |
+| Framework | Spring Boot 3.1.7 · Spring Security 6.1 |
 | Build | Maven 3.9+ |
 | Storage | AWS SDK v2 · MinIO (S3-compatible) |
+| Authentication | Bearer Tokens (IDM) |
 | Testing | JUnit 5 · Mockito · AssertJ · TestContainers · ArchUnit |
 | Containerization | Docker · Docker Compose |
 | Architecture | Hexagonal (Ports & Adapters) |
@@ -169,22 +173,37 @@ docker compose ps
 
 ### 3. Upload a file
 
+First, create a Bearer token:
+
 ```bash
-curl -X POST http://localhost:8080/api/files/upload \
-  -F "file=@./pom.xml" \
+# Format: Base64(userId:email)
+TOKEN=$(echo -n "alice:alice@example.com" | base64)
+echo "Token: $TOKEN"
+```
+
+Then upload the file with Bearer token authentication:
+
+```bash
+curl --request POST \
+  --url http://localhost:8080/api/files/upload \
+  --form "file=@./pom.xml" \
+  --header "Authorization: Bearer $TOKEN" \
   -H "Accept: application/json"
 ```
 
 **Response — `201 Created`:**
 ```json
 {
-  "key": "2026-07-21/3f4a1b2c-pom.xml",
+  "key": "users/alice/2026-07-22/3f4a1b2c-pom.xml",
   "bucket": "demo-bucket",
   "contentType": "application/xml",
   "sizeBytes": 2847,
-  "uploadedAt": "2026-07-21T10:30:45Z"
+  "uploadedAt": "2026-07-22T10:30:45Z",
+  "userId": "alice"
 }
 ```
+
+> ✨ **NEW:** Files are now stored in user-scoped paths (`users/{userId}/...`) for user isolation and audit trail
 
 ### 4. Browse the file in MinIO Console
 
@@ -205,7 +224,21 @@ docker compose down -v       # stop containers and delete MinIO data
 
 ### `POST /api/files/upload`
 
-Upload a file to S3 / MinIO.
+Upload a file to S3 / MinIO with Bearer token authentication.
+
+**Authentication**
+
+| Field | Value | Description |
+|-------|-------|-------------|
+| `Authorization` header | `Bearer <token>` | Required. Token format: Base64(`userId:email`) |
+
+**Example:**
+```bash
+TOKEN=$(echo -n "user1:user@example.com" | base64)
+curl -X POST http://localhost:8080/api/files/upload \
+  -H "Authorization: Bearer $TOKEN" \
+  -F "file=@./document.pdf"
+```
 
 **Request**
 
@@ -217,34 +250,49 @@ Upload a file to S3 / MinIO.
 
 | Status | When | Body |
 |--------|------|------|
-| `201 Created` | File uploaded successfully | `StorageObject` JSON |
-| `400 Bad Request` | File is empty, or filename/content invalid | `{ "error": "...", "detail": "..." }` |
+| `201 Created` | File uploaded successfully | `StorageObject` JSON (includes `userId`) |
+| `400 Bad Request` | File is empty, missing Bearer token, or invalid token format | `{ "error": "...", "detail": "..." }` |
 | `500 Internal Server Error` | Storage operation failed | `{ "error": "...", "detail": "..." }` |
 
 **Example with curl:**
 ```bash
-# Upload a file
-curl -X POST http://localhost:8080/api/files/upload \
-  -F "file=@/path/to/photo.jpg"
+# Generate Bearer token
+TOKEN=$(echo -n "alice:alice@example.com" | base64)
+
+# Upload a file with authentication
+curl --request POST \
+  --url http://localhost:8080/api/files/upload \
+  --form "file=@./photo.jpg" \
+  --header "Authorization: Bearer $TOKEN"
 
 # Upload from stdin
 echo "hello world" | curl -X POST http://localhost:8080/api/files/upload \
-  -F "file=@-;filename=hello.txt;type=text/plain"
+  --form "file=@-;filename=hello.txt" \
+  --header "Authorization: Bearer $TOKEN"
 ```
 
 **Successful response fields:**
 
 | Field | Type | Example |
 |-------|------|---------|
-| `key` | `string` | `"2026-07-21/3f4a1b2c-photo.jpg"` |
+| `key` | `string` | `"users/alice/2026-07-22/3f4a1b2c-photo.jpg"` |
 | `bucket` | `string` | `"demo-bucket"` |
 | `contentType` | `string` | `"image/jpeg"` |
 | `sizeBytes` | `number` | `204800` |
-| `uploadedAt` | `string` (ISO 8601) | `"2026-07-21T10:30:45Z"` |
+| `uploadedAt` | `string` (ISO 8601) | `"2026-07-22T10:30:45Z"` |
+| `userId` | `string` | `"alice"` |
 
 **Storage key format:**  
-`{yyyy-MM-dd}/{8-char-uuid}-{original-filename}`  
-Date-partitioned for S3 performance and natural sorting.
+`users/{userId}/{yyyy-MM-dd}/{8-char-uuid}-{original-filename}`  
+User-scoped paths prevent cross-user access and enable audit trails.
+
+**Error response example (missing Bearer token):**
+```json
+{
+  "error": "Unauthorized",
+  "detail": "Authorization header is missing"
+}
+```
 
 ---
 
@@ -262,7 +310,97 @@ curl http://localhost:8080/actuator/health
 
 ---
 
-## Configuration
+## IDM & Bearer Token Authentication ✨ NEW
+
+EcsLocalDemo now includes Identity and Access Management (IDM) with Bearer token authentication.
+
+### How it works
+
+1. **Generate a Bearer token** — Base64-encode `userId:email`
+   ```bash
+   echo -n "alice:alice@example.com" | base64
+   # Output: YWxpY2U6YWxpY2VAZXhhbXBsZS5jb20=
+   ```
+
+2. **Include in Authorization header** — All API requests require Bearer token
+   ```bash
+   curl -H "Authorization: Bearer YWxpY2U6YWxpY2VAZXhhbXBsZS5jb20=" \
+     http://localhost:8080/api/files/upload
+   ```
+
+3. **Files are user-scoped** — Each user's files stored in separate S3 prefix
+   ```
+   s3://demo-bucket/users/alice/2026-07-22/file1.pdf
+   s3://demo-bucket/users/bob/2026-07-22/file2.pdf
+   ```
+
+4. **userId in response** — Audit trail for all uploads
+   ```json
+   {
+     "key": "users/alice/2026-07-22/abc123-document.pdf",
+     "userId": "alice"
+   }
+   ```
+
+### Architecture components
+
+| Component | File | Role |
+|-----------|------|------|
+| `TokenExtractorPort` | `ecs-core/ports` | Inbound port for token validation |
+| `BearerTokenExtractor` | `ecs-inbound-adapters/security` | Token validation implementation |
+| `BearerTokenAuthenticationFilter` | `ecs-inbound-adapters/security` | Spring Security filter for request interception |
+| `RequestContextHolder` | `ecs-inbound-adapters/security` | ThreadLocal storage of user context |
+| `UserContext` | `ecs-core/domain` | Immutable user identity holder |
+| `SecurityConfiguration` | `ecs-application/config` | Spring Security beans |
+
+### Testing Bearer tokens
+
+```bash
+# Create tokens for different users
+TOKEN_ALICE=$(echo -n "alice:alice@example.com" | base64)
+TOKEN_BOB=$(echo -n "bob:bob@example.com" | base64)
+
+# Upload as Alice
+curl -H "Authorization: Bearer $TOKEN_ALICE" \
+  http://localhost:8080/api/files/upload -F "file=@file1.pdf"
+# → Stored in: users/alice/2026-07-22/...
+
+# Upload as Bob
+curl -H "Authorization: Bearer $TOKEN_BOB" \
+  http://localhost:8080/api/files/upload -F "file=@file2.pdf"
+# → Stored in: users/bob/2026-07-22/...
+
+# Verify user isolation — Alice and Bob have separate folders!
+```
+
+### Error cases
+
+```bash
+# Missing Authorization header
+curl http://localhost:8080/api/files/upload -F "file=@file.pdf"
+# → 400 Bad Request: "Authorization header is missing"
+
+# Invalid Bearer token (not Base64)
+curl -H "Authorization: Bearer invalid_not_base64" \
+  http://localhost:8080/api/files/upload -F "file=@file.pdf"
+# → 400 Bad Request: "Invalid token encoding"
+
+# Malformed token (missing colon separator)
+TOKEN=$(echo -n "justauserwithoutcolon" | base64)
+curl -H "Authorization: Bearer $TOKEN" \
+  http://localhost:8080/api/files/upload -F "file=@file.pdf"
+# → 400 Bad Request: "Invalid token format"
+```
+
+### Documentation
+
+See detailed documentation:
+- **IDM-IMPLEMENTATION-GUIDE.md** — Complete IDM architecture
+- **IDM-QUICK-REFERENCE.md** — Bearer token format & commands
+- **MANUAL-TESTING-GUIDE.md** — 10+ manual test cases with curl
+- **Postman collection** — Import `postman/EcsLocalDemo.postman_collection.json`
+
+---
 
 All configuration lives in `ecs-application/src/main/resources/`.
 
@@ -545,6 +683,17 @@ curl --request POST \
   --url http://localhost:8080/api/files/upload \
   --header 'content-type: multipart/form-data' \
   --form=@/Users/copor/Desktop/test-files/test-gizmo.txt
+```
+
+
+with bearer token
+```bash
+TOKEN=$(echo -n "user1:user@example.com" | base64) && \
+curl --request POST \
+  --url http://localhost:8080/api/files/upload \
+  --form "file=@/Users/copor/Desktop/test-files/test-gizmo.txt" \
+  --header "Authorization: Bearer $TOKEN" \
+  -H "Accept: application/json"
 ```
 # Run architecture tests only
 ```shell
