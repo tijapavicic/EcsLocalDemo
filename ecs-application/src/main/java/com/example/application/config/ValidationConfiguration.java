@@ -34,5 +34,15 @@ public class ValidationConfiguration {
      * <p>Examples: "image/*", "application/pdf", "text/plain"</p>
      */
     private List<String> allowedContentTypes = new ArrayList<>();
+
+    /**
+     * Allowed file extensions (case-insensitive).
+     * <p>Empty list = all extensions allowed.</p>
+     * <p>Examples: "pdf", "jpg", "txt" (dot prefix optional)</p>
+     * <p><b>Phase 3 Refactoring:</b> File extension validation strategy</p>
+     */
+    private List<String> allowedExtensions = new ArrayList<>();
 }
+
+
 

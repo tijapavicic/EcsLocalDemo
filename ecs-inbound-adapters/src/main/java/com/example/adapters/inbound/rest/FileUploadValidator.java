@@ -19,6 +19,7 @@ import org.springframework.web.multipart.MultipartFile;
  *   <li>File must not be empty</li>
  *   <li>File size must not exceed {@code app.validation.upload.max-file-size-bytes}</li>
  *   <li>Content type must match {@code app.validation.upload.allowed-content-types} (if configured)</li>
+ *   <li>File extension must match {@code app.validation.upload.allowed-extensions} (if configured) — <b>Phase 3</b></li>
  * </ul>
  *
  * <p>Throws {@link IllegalArgumentException} on validation failure — caught by
@@ -45,7 +46,8 @@ public class FileUploadValidator {
      * {@link IllegalArgumentException} for consistent error handling.</p>
      *
      * @param file the multipart file to validate
-     * @throws IllegalArgumentException if file is null, empty, exceeds size limit, or content type not allowed
+     * @throws IllegalArgumentException if file is null, empty, exceeds size limit, content type not allowed,
+     *                                   or file extension not allowed
      */
     public void validate(MultipartFile file) {
         // Basic null/empty check
@@ -77,6 +79,22 @@ public class FileUploadValidator {
                 );
             }
         }
+
+        // File extension validation (if restrictions configured) — Phase 3
+        if (!config.getAllowedExtensions().isEmpty()) {
+            String filename = file.getOriginalFilename();
+            if (filename == null || filename.isBlank()) {
+                throw new IllegalArgumentException("filename is required when extension restrictions are configured");
+            }
+
+            String extension = extractExtension(filename);
+            if (!matchesAnyAllowedExtension(extension, config.getAllowedExtensions())) {
+                throw new IllegalArgumentException(
+                        "file extension '%s' not allowed (allowed: %s)"
+                                .formatted(extension, String.join(", ", config.getAllowedExtensions()))
+                );
+            }
+        }
     }
 
     /**
@@ -98,6 +116,42 @@ public class FileUploadValidator {
                 // Exact match
                 return contentType.equals(pattern);
             }
+        });
+    }
+
+    /**
+     * Extract file extension from filename (case-insensitive).
+     *
+     * <p>Examples: "document.pdf" → "pdf", "file.tar.gz" → "gz"</p>
+     *
+     * @param filename the original filename
+     * @return lowercased extension without dot, or empty string if no extension
+     */
+    private String extractExtension(String filename) {
+        if (filename == null || filename.isBlank()) {
+            return "";
+        }
+        int lastDotIndex = filename.lastIndexOf('.');
+        if (lastDotIndex <= 0 || lastDotIndex == filename.length() - 1) {
+            return "";  // No extension found
+        }
+        return filename.substring(lastDotIndex + 1).toLowerCase();
+    }
+
+    /**
+     * Check if file extension matches any of the allowed extensions.
+     *
+     * <p>Case-insensitive matching. Extensions can be specified with or without dot prefix.</p>
+     *
+     * @param extension the file extension (without dot, lowercase)
+     * @param allowedExtensions list of allowed extensions (dot prefix optional)
+     * @return true if extension matches at least one allowed extension
+     */
+    private boolean matchesAnyAllowedExtension(String extension, java.util.List<String> allowedExtensions) {
+        return allowedExtensions.stream().anyMatch(allowed -> {
+            // Normalize: remove leading dot if present
+            String normalizedAllowed = allowed.startsWith(".") ? allowed.substring(1) : allowed;
+            return normalizedAllowed.equalsIgnoreCase(extension);
         });
     }
 }

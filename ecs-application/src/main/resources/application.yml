@@ -83,13 +83,25 @@ app:
       #   104857600   = 100 MB
       max-file-size-bytes: 10485760
 
-      # Allowed MIME type patterns (empty list = all allowed)
-      # Supports wildcards: "image/*" matches "image/jpeg", "image/png", etc.
-      # Examples:
-      #   - "image/*"           — All image types
-      #   - "application/pdf"   — PDF only
-      #   - "text/plain"        — Plain text only
-      #
-      # Default: Empty list (all content types allowed)
-      allowed-content-types: []
+       # Allowed MIME type patterns (empty list = all allowed)
+       # Supports wildcards: "image/*" matches "image/jpeg", "image/png", etc.
+       # Examples:
+       #   - "image/*"           — All image types
+       #   - "application/pdf"   — PDF only
+       #   - "text/plain"        — Plain text only
+       #
+       # Default: Empty list (all content types allowed)
+      allowed-content-types: text/plain,application/pdf
 
+       # Allowed file extensions (case-insensitive, empty list = all allowed)
+       # Phase 3 Refactoring: File extension validation strategy
+       #
+       # Supports extensions with or without dot prefix (normalized automatically)
+       # Examples:
+       #   - "pdf"              — PDF files
+       #   - ".jpg"             — JPEG files (dot prefix optional)
+       #   - "txt"              — Text files
+       #   - "doc"              — Microsoft Word documents
+       #
+       # Default: Empty list (all extensions allowed)
+      allowed-extensions: txt,pdf,jpg,jpeg,png

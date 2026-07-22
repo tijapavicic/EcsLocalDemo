@@ -75,7 +75,7 @@ class FileControllerTest {
                 "users/user123/story-456/2024-01-15/abc-report.pdf", "demo-bucket",
                 "application/pdf", 1024L, Instant.now(), "user123");
 
-        UserContext userContext = new UserContext("user123", "user@example.com", "token");
+        UserContext userContext = UserContext.of("user123", "user@example.com", "token");
         when(tokenExtractor.extractUserContext(any())).thenReturn(userContext);
         when(fileService.upload(any(), any(), any(), any(), any())).thenReturn(stored);
 
@@ -120,7 +120,7 @@ class FileControllerTest {
     @Test
     @DisplayName("POST /api/files/upload — returns 500 Internal Server Error when StorageException is thrown")
     void upload_returns500_whenStorageExceptionThrown() throws Exception {
-        UserContext userContext = new UserContext("user123", "user@example.com", "token");
+        UserContext userContext = UserContext.of("user123", "user@example.com", "token");
         when(tokenExtractor.extractUserContext(any())).thenReturn(userContext);
         when(fileService.upload(any(), any(), any(), any(), any()))
                 .thenThrow(new StorageException("MinIO unreachable"));

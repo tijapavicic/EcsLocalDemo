@@ -3,6 +3,7 @@ package com.example.tests.unit;
 import com.example.core.domain.StorageException;
 import com.example.core.domain.StorageObject;
 import com.example.core.domain.UserContext;
+import com.example.core.ports.ContentTypeResolverPort;
 import com.example.core.ports.StorageKeyGeneratorPort;
 import com.example.core.ports.StoragePort;
 import com.example.core.usecases.FileServiceImpl;
@@ -49,57 +50,67 @@ class FileServiceImplTest {
 
     private StoragePort storagePort;
     private StorageKeyGeneratorPort keyGenerator;
+    private ContentTypeResolverPort contentTypeResolver;
     private FileServiceImpl fileService;
 
     @BeforeEach
     void setUp() {
         storagePort = mock(StoragePort.class);
         keyGenerator = mock(StorageKeyGeneratorPort.class);
-        fileService = new FileServiceImpl(storagePort, keyGenerator, BUCKET);
+        contentTypeResolver = mock(ContentTypeResolverPort.class);
+        fileService = new FileServiceImpl(storagePort, keyGenerator, contentTypeResolver, BUCKET);
     }
 
     // ── Happy path ────────────────────────────────────────────────────────────
 
     @Test
-    @DisplayName("upload() — delegates to StoragePort with correct bucket, key, and content")
+    @DisplayName("upload() — delegates to StoragePort with correct bucket, key, content, and userId")
     void upload_delegatesToStoragePort_withCorrectArguments() throws StorageException {
-        StorageObject mockStorageResult = new StorageObject(GENERATED_KEY, BUCKET, CONTENT_TYPE, (long) CONTENT.length, Instant.now(), null);
+        StorageObject mockStorageResult = new StorageObject(GENERATED_KEY, BUCKET, CONTENT_TYPE, (long) CONTENT.length, Instant.now(), USER_ID);
         when(keyGenerator.generateKey(USER_ID, STORY_ID, FILENAME)).thenReturn(GENERATED_KEY);
-        when(storagePort.store(eq(BUCKET), eq(GENERATED_KEY), eq(CONTENT_TYPE), eq(CONTENT)))
+        when(contentTypeResolver.resolve(FILENAME, CONTENT_TYPE)).thenReturn(CONTENT_TYPE);
+        when(storagePort.store(eq(BUCKET), eq(GENERATED_KEY), eq(CONTENT_TYPE), eq(CONTENT), eq(USER_ID)))
                 .thenReturn(mockStorageResult);
 
-        UserContext user = new UserContext(USER_ID, EMAIL, TOKEN);
+        UserContext user = UserContext.of(USER_ID, EMAIL, TOKEN);
         StorageObject result = fileService.upload(user, STORY_ID, FILENAME, CONTENT_TYPE, CONTENT);
 
         assertThat(result).isNotNull();
         assertThat(result.getBucket()).isEqualTo(BUCKET);
         assertThat(result.getContentType()).isEqualTo(CONTENT_TYPE);
         assertThat(result.getSizeBytes()).isEqualTo((long) CONTENT.length);
+        assertThat(result.getUserId()).isEqualTo(USER_ID);  // ← userId now in response
         verify(keyGenerator).generateKey(USER_ID, STORY_ID, FILENAME);
-        verify(storagePort).store(eq(BUCKET), eq(GENERATED_KEY), eq(CONTENT_TYPE), eq(CONTENT));
+        verify(contentTypeResolver).resolve(FILENAME, CONTENT_TYPE);
+        verify(storagePort).store(eq(BUCKET), eq(GENERATED_KEY), eq(CONTENT_TYPE), eq(CONTENT), eq(USER_ID));
     }
 
     @Test
-    @DisplayName("upload() — attaches userId to response for audit trail")
-    void upload_attachesUserId_toResponse() throws StorageException {
-        StorageObject mockStorageResult = new StorageObject(GENERATED_KEY, BUCKET, CONTENT_TYPE, (long) CONTENT.length, Instant.now(), null);
+    @DisplayName("upload() — delegates content type resolution to ContentTypeResolverPort")
+    void upload_delegatesContentTypeResolution_toStrategy() throws StorageException {
+        StorageObject mockStorageResult = new StorageObject(GENERATED_KEY, BUCKET, "application/octet-stream", (long) CONTENT.length, Instant.now(), USER_ID);
         when(keyGenerator.generateKey(USER_ID, STORY_ID, FILENAME)).thenReturn(GENERATED_KEY);
-        when(storagePort.store(any(), any(), any(), any())).thenReturn(mockStorageResult);
+        when(contentTypeResolver.resolve(FILENAME, null)).thenReturn("application/octet-stream");  // Resolves null to default
+        when(storagePort.store(eq(BUCKET), eq(GENERATED_KEY), eq("application/octet-stream"), eq(CONTENT), eq(USER_ID)))
+                .thenReturn(mockStorageResult);
 
-        UserContext user = new UserContext(USER_ID, EMAIL, TOKEN);
-        StorageObject result = fileService.upload(user, STORY_ID, FILENAME, CONTENT_TYPE, CONTENT);
+        UserContext user = UserContext.of(USER_ID, EMAIL, TOKEN);
+        StorageObject result = fileService.upload(user, STORY_ID, FILENAME, null, CONTENT);  // ← null content type
 
-        assertThat(result.getUserId()).isEqualTo(USER_ID);
+        assertThat(result.getContentType()).isEqualTo("application/octet-stream");
+        verify(contentTypeResolver).resolve(FILENAME, null);
+        verify(storagePort).store(eq(BUCKET), eq(GENERATED_KEY), eq("application/octet-stream"), eq(CONTENT), eq(USER_ID));
     }
 
     @Test
     @DisplayName("upload() — delegates key generation to StorageKeyGeneratorPort with userId, storyId, and filename")
     void upload_delegatesToKeyGenerator_withUserIdStoryIdAndFilename() throws StorageException {
         when(keyGenerator.generateKey(USER_ID, STORY_ID, FILENAME)).thenReturn(GENERATED_KEY);
-        when(storagePort.store(any(), any(), any(), any()))
-                .thenAnswer(inv -> new StorageObject(inv.getArgument(1), BUCKET, CONTENT_TYPE, (long) CONTENT.length, Instant.now(), null));
+        when(contentTypeResolver.resolve(FILENAME, CONTENT_TYPE)).thenReturn(CONTENT_TYPE);
+        when(storagePort.store(eq(BUCKET), eq(GENERATED_KEY), eq(CONTENT_TYPE), eq(CONTENT), eq(USER_ID)))
+                .thenAnswer(inv -> new StorageObject(inv.getArgument(1), BUCKET, CONTENT_TYPE, (long) CONTENT.length, Instant.now(), USER_ID));
 
-        UserContext user = new UserContext(USER_ID, EMAIL, TOKEN);
+        UserContext user = UserContext.of(USER_ID, EMAIL, TOKEN);
         fileService.upload(user, STORY_ID, FILENAME, CONTENT_TYPE, CONTENT);
 
         verify(keyGenerator).generateKey(eq(USER_ID), eq(STORY_ID), eq(FILENAME));
@@ -118,7 +129,7 @@ class FileServiceImplTest {
     @Test
     @DisplayName("upload() — throws IllegalArgumentException when storyId is blank")
     void upload_throwsIllegalArgument_whenStoryIdIsBlank() {
-        UserContext user = new UserContext(USER_ID, EMAIL, TOKEN);
+        UserContext user = UserContext.of(USER_ID, EMAIL, TOKEN);
         assertThatThrownBy(() -> fileService.upload(user, "   ", FILENAME, CONTENT_TYPE, CONTENT))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("storyId");
@@ -127,7 +138,7 @@ class FileServiceImplTest {
     @Test
     @DisplayName("upload() — throws IllegalArgumentException when content is empty")
     void upload_throwsIllegalArgument_whenContentIsEmpty() {
-        UserContext user = new UserContext(USER_ID, EMAIL, TOKEN);
+        UserContext user = UserContext.of(USER_ID, EMAIL, TOKEN);
         assertThatThrownBy(() -> fileService.upload(user, STORY_ID, FILENAME, CONTENT_TYPE, new byte[0]))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("content");
@@ -136,19 +147,10 @@ class FileServiceImplTest {
     @Test
     @DisplayName("upload() — throws IllegalArgumentException when filename is blank")
     void upload_throwsIllegalArgument_whenFilenameIsBlank() {
-        UserContext user = new UserContext(USER_ID, EMAIL, TOKEN);
+        UserContext user = UserContext.of(USER_ID, EMAIL, TOKEN);
         assertThatThrownBy(() -> fileService.upload(user, STORY_ID, "   ", CONTENT_TYPE, CONTENT))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("filename");
-    }
-
-    @Test
-    @DisplayName("upload() — throws IllegalArgumentException when contentType is blank")
-    void upload_throwsIllegalArgument_whenContentTypeIsBlank() {
-        UserContext user = new UserContext(USER_ID, EMAIL, TOKEN);
-        assertThatThrownBy(() -> fileService.upload(user, STORY_ID, FILENAME, "", CONTENT))
-                .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("contentType");
     }
 
     // ── Error propagation ─────────────────────────────────────────────────────
@@ -157,10 +159,11 @@ class FileServiceImplTest {
     @DisplayName("upload() — propagates StorageException from StoragePort")
     void upload_propagatesStorageException_fromStoragePort() throws StorageException {
         when(keyGenerator.generateKey(USER_ID, STORY_ID, FILENAME)).thenReturn(GENERATED_KEY);
-        when(storagePort.store(any(), any(), any(), any()))
+        when(contentTypeResolver.resolve(FILENAME, CONTENT_TYPE)).thenReturn(CONTENT_TYPE);
+        when(storagePort.store(any(), any(), any(), any(), any()))
                 .thenThrow(new StorageException("S3 connection refused"));
 
-        UserContext user = new UserContext(USER_ID, EMAIL, TOKEN);
+        UserContext user = UserContext.of(USER_ID, EMAIL, TOKEN);
         assertThatThrownBy(() -> fileService.upload(user, STORY_ID, FILENAME, CONTENT_TYPE, CONTENT))
                 .isInstanceOf(StorageException.class)
                 .hasMessageContaining("S3 connection refused");
@@ -171,21 +174,28 @@ class FileServiceImplTest {
     @Test
     @DisplayName("constructor — throws NullPointerException when storagePort is null")
     void constructor_throwsNPE_whenStoragePortIsNull() {
-        assertThatThrownBy(() -> new FileServiceImpl(null, keyGenerator, BUCKET))
+        assertThatThrownBy(() -> new FileServiceImpl(null, keyGenerator, contentTypeResolver, BUCKET))
                 .isInstanceOf(NullPointerException.class);
     }
 
     @Test
     @DisplayName("constructor — throws NullPointerException when keyGenerator is null")
     void constructor_throwsNPE_whenKeyGeneratorIsNull() {
-        assertThatThrownBy(() -> new FileServiceImpl(storagePort, null, BUCKET))
+        assertThatThrownBy(() -> new FileServiceImpl(storagePort, null, contentTypeResolver, BUCKET))
+                .isInstanceOf(NullPointerException.class);
+    }
+
+    @Test
+    @DisplayName("constructor — throws NullPointerException when contentTypeResolver is null")
+    void constructor_throwsNPE_whenContentTypeResolverIsNull() {
+        assertThatThrownBy(() -> new FileServiceImpl(storagePort, keyGenerator, null, BUCKET))
                 .isInstanceOf(NullPointerException.class);
     }
 
     @Test
     @DisplayName("constructor — throws IllegalArgumentException when bucket is blank")
     void constructor_throwsIllegalArgument_whenBucketIsBlank() {
-        assertThatThrownBy(() -> new FileServiceImpl(storagePort, keyGenerator, ""))
+        assertThatThrownBy(() -> new FileServiceImpl(storagePort, keyGenerator, contentTypeResolver, ""))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("bucket");
     }

@@ -4,18 +4,37 @@ import java.util.Objects;
  * Immutable domain object representing an authenticated user.
  * Extracted from Bearer token in HTTP Authorization header.
  * Thread-safe: suitable for request-scoped injection.
+ *
+ * <p><b>Design Pattern:</b> Factory method provides extensible validation without coupling
+ * to specific validation strategies (SRP + OCP)
  */
 public class UserContext {
     private final String userId;
     private final String email;
     private final String token;
-    public UserContext(String userId, String email, String token) {
+    /**
+     * Private constructor - enforces factory method usage.
+     */
+    private UserContext(String userId, String email, String token) {
+        this.userId = userId;
+        this.email = email;
+        this.token = token;
+    }
+    /**
+     * Factory method with default validation strategy.
+     *
+     * Validates userId is not null/blank; email and token optional.
+     * @param userId authenticated user ID (required, not blank)
+     * @param email user email address (optional)
+     * @param token bearer token (optional)
+     * @return immutable UserContext
+     * @throws IllegalArgumentException if userId is blank or null
+     */
+    public static UserContext of(String userId, String email, String token) {
         if (userId == null || userId.isBlank()) {
             throw new IllegalArgumentException("userId must not be blank");
         }
-        this.userId = Objects.requireNonNull(userId);
-        this.email = email;
-        this.token = token;
+        return new UserContext(userId, email, token);
     }
     public String getUserId() {
         return userId;

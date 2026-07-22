@@ -38,7 +38,7 @@ public class BearerTokenExtractor implements TokenExtractorPort {
                 throw new TokenValidationException("userId is blank");
             }
 
-            return new UserContext(userId, email, token);
+            return UserContext.of(userId, email, token);
 
         } catch (IllegalArgumentException ex) {
             throw new TokenValidationException("Invalid token encoding: " + ex.getMessage(), ex);
