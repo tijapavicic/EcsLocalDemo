@@ -97,20 +97,21 @@ StoragePort (outbound port interface)
 
 ## 🔄 Data Flow Example: File Upload
 
-1. **Client sends:** `POST /api/files/upload` (multipart/form-data, with `Authorization: Bearer token` header)
+1. **Client sends:** `POST /api/files/upload` (multipart/form-data with `storyId` and `file` fields, `Authorization: Bearer token` header)
 2. **Security filter** (`BearerTokenAuthenticationFilter`) intercepts request
 3. **Token extraction:** `AuthorizationExtractor` parses `Authorization: Bearer <token>` header
 4. **Token validation:** `TokenExtractorPort.extractUserContext(token)` → returns `UserContext` (userId, email)
-5. **Spring routes to:** `FileController.upload(authHeader, file)`
-6. **Controller validation:** `FileUploadValidator.validate(file)` checks file size, MIME type, etc.
+5. **Spring routes to:** `FileController.upload(authHeader, storyId, file)`
+6. **Controller validation:** `FileUploadValidator.validate(file)` checks file size, MIME type; validates `storyId` is not blank
 7. **Controller calls:** `tokenExtractor.extractUserContext(token)` → gets `UserContext`
-8. **Controller calls:** `fileService.upload(UserContext, filename, contentType, content)`
-9. **FileServiceImpl validates:** filename (not blank), content (not empty)
-10. **FileServiceImpl generates:** user-scoped key `users/{userId}/2024-01-15/uuid-filename.pdf`
-11. **FileServiceImpl calls:** `storagePort.store(bucket, key, contentType, content)`
-12. **S3StorageAdapter (MinIO/AWS):** builds `PutObjectRequest`, uploads via `S3Client.putObject()`
-13. **Returns:** `StorageObject` with metadata (key, bucket, contentType, size, timestamp, **userId**)
-14. **Controller returns:** `201 Created` with JSON body (includes userId for audit trail)
+8. **Controller calls:** `fileService.upload(UserContext, storyId, filename, contentType, content)`
+9. **FileServiceImpl validates:** all parameters (userContext, storyId, filename, contentType, content)
+10. **FileServiceImpl delegates key generation:** calls `keyGenerator.generateKey(userId, storyId, filename)` via `StorageKeyGeneratorPort`
+11. **UserScopedKeyGenerator generates:** user and story-scoped key `users/{userId}/{storyId}/2024-01-15/uuid-filename.pdf`
+12. **FileServiceImpl calls:** `storagePort.store(bucket, key, contentType, content)`
+13. **S3StorageAdapter (MinIO/AWS):** builds `PutObjectRequest`, uploads via `S3Client.putObject()`
+14. **Returns:** `StorageObject` with metadata (key, bucket, contentType, size, timestamp, **userId**)
+15. **Controller returns:** `201 Created` with JSON body (includes userId for audit trail)
 
 ---
 
@@ -226,7 +227,40 @@ public interface TokenExtractorPort {
 }
 ```
 
-**Domain Object:**
+**Outbound Port (Storage Key Generation Strategy):**
+```java
+// ecs-core/ports/StorageKeyGeneratorPort.java — pluggable key generation
+public interface StorageKeyGeneratorPort {
+  /**
+   * Generate user and story-scoped storage key.
+   * @param userId   authenticated user ID (e.g., "alice")
+   * @param storyId  story context ID (e.g., "story-123")
+   * @param filename original filename (e.g., "report.pdf")
+   * @return generated key (e.g., "users/alice/story-123/2024-01-15/abc123-report.pdf")
+   */
+  String generateKey(String userId, String storyId, String filename);
+}
+```
+
+**Outbound Adapter (Key Generation Implementation):**
+```java
+// ecs-outbound-adapters/storage/UserScopedKeyGenerator.java
+@Component
+public class UserScopedKeyGenerator implements StorageKeyGeneratorPort {
+  @Override
+  public String generateKey(String userId, String storyId, String filename) {
+    // Validates inputs, generates UUID prefix, formats date, sanitizes filename
+    return String.format("users/%s/%s/%s/%s-%s", userId, storyId, date, uuid, safeFilename);
+  }
+}
+```
+
+**Why Pluggable Key Generation?**
+- **Open/Closed Principle:** New key generation strategies (flat layout, cloud-specific formats, encryption prefixes) can be added without modifying `FileServiceImpl`
+- **Single Responsibility:** `FileServiceImpl` orchestrates upload; `StorageKeyGeneratorPort` owns key generation strategy
+- **Testability:** Key generation logic can be tested in isolation without mocking storage
+
+**Domain Objects (Core):**
 ```java
 // ecs-core/domain/UserContext.java — immutable, thread-safe
 public class UserContext {
@@ -235,16 +269,28 @@ public class UserContext {
   private final String token;       // raw bearer token
   // getters, equals, hashCode
 }
+
+// ecs-core/domain/StorageObject.java — immutable, returned from upload
+public class StorageObject {
+  private final String key;         // "users/alice/story-123/2024-01-15/abc123-report.pdf"
+  private final String bucket;      // "demo-bucket"
+  private final String contentType; // "application/pdf"
+  private final long sizeBytes;     // file size
+  private final Instant uploadedAt; // timestamp
+  private final String userId;      // user identity for audit trail
+  // getters, equals, hashCode
+}
 ```
 
 **Updated Use Case Signature:**
 ```java
 // ecs-core/ports/FileServicePort.java
 public StorageObject upload(
-  UserContext userContext,           // ← NEW: user identity
-  String filename, 
-  String contentType, 
-  byte[] content
+  UserContext userContext,           // authenticated user
+  String storyId,                    // story context (e.g., "story-123")
+  String filename,                   // original filename
+  String contentType,                // MIME type
+  byte[] content                     // file bytes
 ) throws StorageException;
 ```
 
@@ -270,24 +316,32 @@ app:
 - All requests allowed without authentication
 - ⚠️ **WARNING:** Do NOT use disabled mode in production
 
-### Storage Key Format (User-Scoped)
+### Storage Key Format (User & Story-Scoped)
 
-Files are stored in user-scoped paths to prevent cross-user access and enable audit trails:
+Files are stored in user and story-scoped paths to prevent cross-user access, organize files by context, and enable audit trails:
 
 ```
-users/{userId}/{yyyy-MM-dd}/{uuid}-{filename}
+users/{userId}/{storyId}/{yyyy-MM-dd}/{uuid}-{filename}
 ```
 
 **Example:**
 ```
-users/alice/2026-07-22/3f4a1b2c-report.pdf
-users/bob/2026-07-22/2e8d9a7f-photo.jpg
+users/alice/story-123/2026-07-22/3f4a1b2c-report.pdf
+users/alice/story-456/2026-07-22/2e8d9a7f-photo.jpg
+users/bob/story-123/2026-07-22/7f2d8a9e-document.pdf
 ```
 
-Each user's files are isolated within their `users/{userId}/` prefix, enabling:
+**Key Generation Strategy (Pluggable via `StorageKeyGeneratorPort`):**
+- Filename is sanitized to remove path traversal and invalid characters: `[^a-zA-Z0-9._-]` → `_`
+- UUID prefix (8 chars) prevents collisions from simultaneous uploads
+- Date partition enables time-series queries and cleanup policies
+- Story context isolates files for different use cases/projects within user's space
+
+Each user's files are isolated within their `users/{userId}/` prefix, and organized by story context, enabling:
 - 🔒 Cross-user access prevention (authorization boundary)
-- 📋 Audit trails (who uploaded what, when)
-- 📊 Per-user storage quotas (future enhancement)
+- 📂 Per-story file organization (separate uploads for different projects/contexts)
+- 📋 Audit trails (who uploaded what, when, in which story context)
+- 📊 Per-user and per-story storage quotas (future enhancement)
 
 ---
 
@@ -369,37 +423,46 @@ Tested by `HexagonalArchitectureTest` — **build fails if any rule breaks**:
 @DisplayName("FileServiceImpl — unit tests")
 class FileServiceImplTest {
   private static final String BUCKET = "test-bucket";
+  private static final String USER_ID = "alice";
+  private static final String STORY_ID = "story-123";
   private static final byte[] CONTENT = "hello world".getBytes();
   
   private StoragePort storagePort;
+  private StorageKeyGeneratorPort keyGenerator;
   private FileServiceImpl fileService;
   
   @BeforeEach
   void setUp() {
     storagePort = mock(StoragePort.class);
-    fileService = new FileServiceImpl(storagePort, BUCKET);
+    keyGenerator = mock(StorageKeyGeneratorPort.class);
+    fileService = new FileServiceImpl(storagePort, keyGenerator, BUCKET);
   }
   
   @Test
-  @DisplayName("upload() — generates date-partitioned key with filename")
-  void upload_generatedKey_containsDateAndFilename() throws StorageException {
+  @DisplayName("upload() — delegates key generation to StorageKeyGeneratorPort")
+  void upload_delegatesKeyGeneration_toPort() throws StorageException {
+    UserContext userContext = new UserContext(USER_ID, "alice@example.com", "token");
+    
+    when(keyGenerator.generateKey(USER_ID, STORY_ID, "report.pdf"))
+      .thenReturn("users/alice/story-123/2024-01-15/abc123-report.pdf");
+    
     when(storagePort.store(any(), any(), any(), any()))
-      .thenAnswer(inv -> new StorageObject(inv.getArgument(1), BUCKET, "text/plain", CONTENT.length, Instant.now()));
+      .thenAnswer(inv -> new StorageObject(inv.getArgument(1), BUCKET, "application/pdf", CONTENT.length, Instant.now(), USER_ID));
     
-    fileService.upload("report.pdf", "application/pdf", CONTENT);
+    fileService.upload(userContext, STORY_ID, "report.pdf", "application/pdf", CONTENT);
     
-    var captor = ArgumentCaptor.forClass(String.class);
-    verify(storagePort).store(eq(BUCKET), captor.capture(), any(), any());
-    
-    assertThat(captor.getValue()).matches("\\d{4}-\\d{2}-\\d{2}/.+-report\\.pdf");
+    verify(keyGenerator).generateKey(USER_ID, STORY_ID, "report.pdf");
+    verify(storagePort).store(eq(BUCKET), eq("users/alice/story-123/2024-01-15/abc123-report.pdf"), any(), any());
   }
   
   @Test
-  @DisplayName("upload() — throws IllegalArgumentException when content is empty")
-  void upload_throwsIllegalArgument_whenContentIsEmpty() {
-    assertThatThrownBy(() -> fileService.upload("file.txt", "text/plain", new byte[0]))
+  @DisplayName("upload() — throws IllegalArgumentException when storyId is blank")
+  void upload_throwsIllegalArgument_whenStoryIdIsBlank() {
+    UserContext userContext = new UserContext(USER_ID, "alice@example.com", "token");
+    
+    assertThatThrownBy(() -> fileService.upload(userContext, "", "file.txt", "text/plain", CONTENT))
       .isInstanceOf(IllegalArgumentException.class)
-      .hasMessageContaining("content");
+      .hasMessageContaining("storyId");
   }
 }
 ```
@@ -412,43 +475,73 @@ class FileServiceImplTest {
 class FileControllerTest {
   private MockMvc mockMvc;
   private FileServicePort fileService;
+  private TokenExtractorPort tokenExtractor;
   
   @BeforeEach
   void setUp() {
     fileService = mock(FileServicePort.class);
+    tokenExtractor = mock(TokenExtractorPort.class);
     mockMvc = MockMvcBuilders
-      .standaloneSetup(new FileController(fileService))
+      .standaloneSetup(new FileController(fileService, tokenExtractor, new FileUploadValidator()))
       .build();
   }
   
   @Test
   @DisplayName("POST /api/files/upload — returns 201 with StorageObject JSON")
   void upload_returns201_withStorageObjectBody() throws Exception {
-    StorageObject stored = new StorageObject(
-      "2024-01-15/abc-report.pdf", "demo-bucket",
-      "application/pdf", 1024L, Instant.now());
+    String token = "dXNlcjEyMzp1c2VyQGV4YW1wbGUuY29t";  // base64-encoded userId:email
+    UserContext userContext = new UserContext("user123", "user@example.com", token);
     
-    when(fileService.upload(any(), any(), any())).thenReturn(stored);
+    StorageObject stored = new StorageObject(
+      "users/user123/story-123/2024-01-15/abc-report.pdf", "demo-bucket",
+      "application/pdf", 1024L, Instant.now(), "user123");
+    
+    when(tokenExtractor.extractUserContext(token)).thenReturn(userContext);
+    when(fileService.upload(any(), any(), any(), any(), any())).thenReturn(stored);
     
     MockMultipartFile file = new MockMultipartFile(
       "file", "report.pdf", "application/pdf", "PDF content".getBytes());
     
-    mockMvc.perform(multipart("/api/files/upload").file(file))
+    mockMvc.perform(multipart("/api/files/upload")
+      .file(file)
+      .param("storyId", "story-123")
+      .header("Authorization", "Bearer " + token))
       .andExpect(status().isCreated())
-      .andExpect(jsonPath("$.key").value("2024-01-15/abc-report.pdf"))
-      .andExpect(jsonPath("$.bucket").value("demo-bucket"));
+      .andExpect(jsonPath("$.key").value("users/user123/story-123/2024-01-15/abc-report.pdf"))
+      .andExpect(jsonPath("$.userId").value("user123"));
+  }
+  
+  @Test
+  @DisplayName("POST /api/files/upload — returns 400 when storyId is missing")
+  void upload_returns400_whenStoryIdIsMissing() throws Exception {
+    String token = "dXNlcjEyMzp1c2VyQGV4YW1wbGUuY29t";
+    
+    MockMultipartFile file = new MockMultipartFile(
+      "file", "file.txt", MediaType.TEXT_PLAIN_VALUE, "data".getBytes());
+    
+    mockMvc.perform(multipart("/api/files/upload")
+      .file(file)
+      .header("Authorization", "Bearer " + token))
+      .andExpect(status().isBadRequest());
   }
   
   @Test
   @DisplayName("POST /api/files/upload — returns 500 when StorageException is thrown")
   void upload_returns500_whenStorageExceptionThrown() throws Exception {
-    when(fileService.upload(any(), any(), any()))
+    String token = "dXNlcjEyMzp1c2VyQGV4YW1wbGUuY29t";
+    UserContext userContext = new UserContext("user123", "user@example.com", token);
+    
+    when(tokenExtractor.extractUserContext(token)).thenReturn(userContext);
+    when(fileService.upload(any(), any(), any(), any(), any()))
       .thenThrow(new StorageException("MinIO unreachable"));
     
     MockMultipartFile file = new MockMultipartFile(
       "file", "file.txt", MediaType.TEXT_PLAIN_VALUE, "data".getBytes());
     
-    mockMvc.perform(multipart("/api/files/upload").file(file))
+    mockMvc.perform(multipart("/api/files/upload")
+      .file(file)
+      .param("storyId", "story-123")
+      .header("Authorization", "Bearer " + token))
       .andExpect(status().isInternalServerError())
       .andExpect(jsonPath("$.error").value("Storage operation failed"));
   }
@@ -489,17 +582,34 @@ class FileUploadWithIDMIT {
     // Generate Bearer token
     String token = Base64.getEncoder().encodeToString("alice:alice@example.com".getBytes());
     
-    // Upload with Bearer token
+    // Upload with Bearer token and storyId
     HttpHeaders headers = new HttpHeaders();
     headers.set("Authorization", "Bearer " + token);
     
-    // Assert: key is user-scoped (users/alice/...)
-    // Assert: response includes userId
+    MultiValueMap<String, Object> body = new LinkedMultiValueMap<>();
+    body.add("storyId", "story-123");
+    body.add("file", new FileSystemResource(new File("test.txt")));
+    
+    HttpEntity<MultiValueMap<String, Object>> request = new HttpEntity<>(body, headers);
+    ResponseEntity<StorageObject> response = restTemplate.postForEntity("/api/files/upload", request, StorageObject.class);
+    
+    // Assert: 201 Created
+    assertThat(response.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+    
+    // Assert: key is user and story-scoped
+    assertThat(response.getBody().getKey()).matches("users/alice/story-123/\\d{4}-\\d{2}-\\d{2}/.+");
+    
+    // Assert: response includes userId for audit trail
+    assertThat(response.getBody().getUserId()).isEqualTo("alice");
   }
   
   @Test
   void uploadWithInvalidToken_returns401_unauthorized() {
     // Test invalid/expired token handling
+    HttpHeaders headers = new HttpHeaders();
+    headers.set("Authorization", "Bearer invalid-token");
+    
+    // Should be rejected by BearerTokenExtractor
   }
 }
 ```
@@ -607,18 +717,24 @@ mvn spring-boot:run -Dspring-boot.run.arguments="--spring.profiles.active=local-
 
 ### Test Upload
 ```bash
-# Upload a file
+# Generate Bearer token (base64-encoded userId:email)
+TOKEN=$(echo -n "alice:alice@example.com" | base64)
+
+# Upload a file with storyId
 curl -X POST http://localhost:8080/api/files/upload \
+  -H "Authorization: Bearer $TOKEN" \
+  -F "storyId=story-123" \
   -F "file=@./pom.xml" \
   -H "Accept: application/json"
 
 # Response: 201 Created
 # {
-#   "key": "2024-01-15/a1b2c3d4-pom.xml",
+#   "key": "users/alice/story-123/2024-01-15/abc123-pom.xml",
 #   "bucket": "demo-bucket",
 #   "contentType": "application/xml",
 #   "sizeBytes": 2847,
-#   "uploadedAt": "2024-01-15T10:30:45Z"
+#   "uploadedAt": "2024-01-15T10:30:45Z",
+#   "userId": "alice"
 # }
 ```
 
@@ -785,29 +901,30 @@ public class StorageConfig { }
 
 | File | Purpose |
 |------|---------|
-| `ecs-core/ports/FileServicePort.java` | Inbound port (what REST calls) — now includes `upload(UserContext, ...)` overload |
-| `ecs-core/ports/StoragePort.java` | Outbound port (what adapters implement) |
+| `ecs-core/ports/FileServicePort.java` | Inbound port (what REST calls) — `upload(UserContext, storyId, ...)` with story context |
+| `ecs-core/ports/StoragePort.java` | Outbound port (what adapters implement) for cloud storage operations |
 | `ecs-core/ports/TokenExtractorPort.java` | Inbound port for Bearer token extraction & validation |
+| `ecs-core/ports/StorageKeyGeneratorPort.java` | Outbound port for storage key generation strategy (pluggable) |
 | `ecs-core/domain/UserContext.java` | Immutable domain object representing authenticated user |
-| `ecs-core/domain/StorageObject.java` | Storage metadata (now includes `userId` field) |
-| `ecs-core/usecases/FileServiceImpl.java` | Core use case (pure domain logic, user-scoped file storage) |
-| `ecs-inbound-adapters/rest/FileController.java` | REST controller (HTTP↔domain), Bearer token extraction |
+| `ecs-core/domain/StorageObject.java` | Storage metadata (includes `userId` field for audit trail) |
+| `ecs-core/usecases/FileServiceImpl.java` | Core use case (pure domain logic, user+story-scoped file storage) |
+| `ecs-inbound-adapters/rest/FileController.java` | REST controller (HTTP↔domain), requires `storyId` form param |
 | `ecs-inbound-adapters/rest/FileUploadValidator.java` | Input validation (file size, content checks) |
 | `ecs-inbound-adapters/security/BearerTokenExtractor.java` | Token extraction adapter (implements `TokenExtractorPort`) |
 | `ecs-inbound-adapters/security/BearerTokenAuthenticationFilter.java` | Spring Security filter for Bearer token interception & ThreadLocal storage |
 | `ecs-inbound-adapters/security/AuthorizationExtractor.java` | Utility to extract Bearer token from Authorization header |
 | `ecs-inbound-adapters/security/RequestContextHolder.java` | ThreadLocal-based context storage for request-scoped `UserContext` retrieval |
-| `ecs-outbound-adapters/storage/S3StorageAdapter.java` | Storage adapter (domain→SDK) |
+| `ecs-outbound-adapters/storage/S3StorageAdapter.java` | Storage adapter (domain→SDK) implementing `StoragePort` |
+| `ecs-outbound-adapters/storage/UserScopedKeyGenerator.java` | Key generation adapter implementing `StorageKeyGeneratorPort` — generates `users/{userId}/{storyId}/{date}/{uuid}-{filename}` |
 | `ecs-application/config/SecurityConfiguration.java` | Wires token extractor & security filter chain |
-| `ecs-application/config/StorageConfiguration.java` | Wires storage adapter based on profile |
-| `ecs-application/config/RateLimitConfiguration.java` | Configures rate limiting interceptor |
-| `ecs-application/config/WebMvcConfiguration.java` | Registers web MVC components (interceptors) |
+| `ecs-application/config/StorageConfiguration.java` | Wires storage adapter & key generator based on profile |
+| `ecs-application/config/S3Configuration.java` | YAML properties binding for S3 credentials and endpoints |
 | `ecs-application/integration/SecurityTestConfiguration.java` | Test configuration disabling Spring Security for integration tests (allows Bearer token mocking) |
 | `ecs-tests/arch/HexagonalArchitectureTest.java` | Architecture enforcement (ArchUnit) |
-| `ecs-tests/unit/FileServiceImplTest.java` | Domain use case tests (no Spring) |
-| `ecs-tests/unit/FileControllerTest.java` | Adapter HTTP tests (MockMvc standalone) |
+| `ecs-tests/unit/FileServiceImplTest.java` | Domain use case tests (no Spring) with key generator mocking |
+| `ecs-tests/unit/FileControllerTest.java` | Adapter HTTP tests (MockMvc standalone) with storyId validation |
 | `ecs-application/integration/FileUploadIT.java` | End-to-end tests with real MinIO |
-| `ecs-application/integration/FileUploadWithIDMIT.java` | End-to-end tests with Bearer token authentication |
+| `ecs-application/integration/FileUploadWithIDMIT.java` | End-to-end tests with Bearer token authentication & storyId |
 
 ---
 

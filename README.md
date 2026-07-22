@@ -674,27 +674,58 @@ docker compose up -d
 # Check app health
 curl http://localhost:8080/actuator/health
 
-# Upload a file
-curl -X POST http://localhost:8080/api/files/upload -F "file=@README.md"
-```
-
-```bash
-curl --request POST \
-  --url http://localhost:8080/api/files/upload \
-  --header 'content-type: multipart/form-data' \
-  --form=@/Users/copor/Desktop/test-files/test-gizmo.txt
+# Upload a file with bearer token
 ```
 
 
-with bearer token
-```bash
-TOKEN=$(echo -n "user1:user@example.com" | base64) && \
-curl --request POST \
-  --url http://localhost:8080/api/files/upload \
-  --form "file=@/Users/copor/Desktop/test-files/test-gizmo.txt" \
-  --header "Authorization: Bearer $TOKEN" \
-  -H "Accept: application/json"
+```shell
+# 1. Generate Bearer token (Base64 encoded userId:email)
+TOKEN=$(echo -n "user1:user@example.com" | base64)
+
+# 2. Make the request
+curl -X POST http://localhost:8080/api/files/upload \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Accept: application/json" \
+  -F "storyId=story-123" \
+  -F "file=@/Users/copor/Desktop/test-files/test-gizmo.txt"
 ```
+
+#Debugging
+```shell
+# View logs
+#docker compose logs -f app  
+
+# Kill all Java processes
+pkill -9 -f java
+
+# Wait a moment
+sleep 2
+
+# Start the app fresh from the rebuilt JAR
+cd /Users/copor/IdeaProjects/EcsLocalDemo/ecs-application && \
+java -jar target/ecs-application-1.0.0.jar --spring.profiles.active=local-minio &
+
+# Wait for startup
+sleep 6
+
+# Test the request
+TOKEN=$(echo -n "user1:user@example.com" | base64)
+curl -X POST http://localhost:8080/api/files/upload \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Accept: application/json" \
+  -F "storyId=story-123" \
+  -F "file=@/Users/copor/Desktop/test-files/test-gizmo.txt"
+```
+# tail logs
+```shell
+tail -50 /tmp/app.log | grep -E "(ERROR|WARN|Bearer|authenticated)"
+```
+
+
+
+
+
+
 # Run architecture tests only
 ```shell
 mvn test -pl ecs-tests -Dtest=HexagonalArchitectureTest

@@ -1,6 +1,7 @@
 package com.example.application.config;
 
 import com.example.core.ports.FileServicePort;
+import com.example.core.ports.StorageKeyGeneratorPort;
 import com.example.core.ports.StoragePort;
 import com.example.core.usecases.FileServiceImpl;
 import org.slf4j.Logger;
@@ -22,6 +23,13 @@ import java.net.URI;
  *
  * <p>This is the ONLY place where beans are defined. It reads {@link S3Configuration}
  * (profile-specific YAML) and builds either a MinIO or AWS-flavored {@link S3Client}.</p>
+ *
+ * <h2>Dependency Injection Pattern:</h2>
+ * <pre>
+ * S3StorageAdapter (component) → StoragePort (port)
+ * UserScopedKeyGenerator (component) → StorageKeyGeneratorPort (port)
+ * FileServiceImpl (bean) ← StoragePort + StorageKeyGeneratorPort (dependencies)
+ * </pre>
  *
  * <h2>How profile switching works:</h2>
  * <pre>
@@ -90,16 +98,26 @@ public class StorageConfiguration {
     }
 
     /**
-     * Creates the {@link FileServiceImpl} use-case, injecting the outbound {@link StoragePort}
-     * and the bucket name from {@link S3Configuration}.
+     * Creates the {@link FileServiceImpl} use-case, injecting outbound port implementations.
      *
-     * @param storagePort the S3StorageAdapter found by component scan
-     * @param cfg         the profile-specific properties, provides the bucket name
+     * <p><strong>Dependencies injected:</strong></p>
+     * <ul>
+     *   <li>{@link StoragePort} — S3StorageAdapter (auto-discovered @Component)</li>
+     *   <li>{@link StorageKeyGeneratorPort} — UserScopedKeyGenerator (auto-discovered @Component)</li>
+     *   <li>{@code bucket} — from S3Configuration</li>
+     * </ul>
+     *
+     * <p><strong>Principle:</strong> Use case depends on port interfaces, not concrete adapters.
+     * Adapters are auto-discovered by Spring component scan.</p>
+     *
+     * @param storagePort   the S3StorageAdapter found by component scan
+     * @param keyGenerator  the UserScopedKeyGenerator found by component scan
+     * @param cfg           the profile-specific properties, provides the bucket name
      */
     @Bean
-    public FileServicePort fileService(StoragePort storagePort, S3Configuration cfg) {
+    public FileServicePort fileService(StoragePort storagePort, StorageKeyGeneratorPort keyGenerator, S3Configuration cfg) {
         log.info("FileService configured with bucket={}", cfg.getBucket());
-        return new FileServiceImpl(storagePort, cfg.getBucket());
+        return new FileServiceImpl(storagePort, keyGenerator, cfg.getBucket());
     }
 }
 

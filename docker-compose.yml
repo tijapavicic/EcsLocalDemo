@@ -1,4 +1,3 @@
-version: '3.8'
 
 # ─────────────────────────────────────────────────────────────────────────────
 # ECS Local Demo — Docker Compose for local development with MinIO

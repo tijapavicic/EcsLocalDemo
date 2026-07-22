@@ -4,93 +4,114 @@ import com.example.core.domain.StorageException;
 import com.example.core.domain.StorageObject;
 import com.example.core.domain.UserContext;
 import com.example.core.ports.FileServicePort;
+import com.example.core.ports.StorageKeyGeneratorPort;
 import com.example.core.ports.StoragePort;
 
-import java.time.Instant;
-import java.time.LocalDate;
-import java.time.ZoneId;
 import java.util.Objects;
-import java.util.UUID;
 
 /**
  * Core use-case: orchestrates file upload with IAM support.
  *
  * <p><strong>No Spring annotations.</strong> Pure Java implementation.</p>
  *
- * <p>Generates user-scoped storage keys: {@code users/{userId}/yyyy-MM-dd/uuid-filename}</p>
+ * <p><strong>Single Responsibility Principle:</strong> Focuses solely on orchestrating the upload
+ * workflow. Delegates key generation to {@link StorageKeyGeneratorPort} and storage to
+ * {@link StoragePort}.</p>
+ *
+ * <p><strong>Dependency Injection:</strong> Constructor injection of all dependencies.
+ * No setters, no fields modified after construction.</p>
  */
 public class FileServiceImpl implements FileServicePort {
 
     private final StoragePort storagePort;
+    private final StorageKeyGeneratorPort keyGenerator;
     private final String bucket;
 
     /**
-     * @param storagePort outbound port — injected by the application config
-     * @param bucket      target bucket name read from YAML via {@code S3Configuration}
+     * Construct with required dependencies.
+     *
+     * <p>All parameters are required (no nulls). Validation fails fast in constructor.</p>
+     *
+     * @param storagePort    outbound port for cloud storage operations
+     * @param keyGenerator   outbound port for storage key generation strategy
+     * @param bucket         target bucket name (read from YAML via {@code S3Configuration})
+     * @throws IllegalArgumentException if any parameter is null or blank
      */
-    public FileServiceImpl(StoragePort storagePort, String bucket) {
+    public FileServiceImpl(StoragePort storagePort, StorageKeyGeneratorPort keyGenerator, String bucket) {
         this.storagePort = Objects.requireNonNull(storagePort, "storagePort must not be null");
+        this.keyGenerator = Objects.requireNonNull(keyGenerator, "keyGenerator must not be null");
         if (bucket == null || bucket.isBlank()) {
             throw new IllegalArgumentException("bucket must not be blank");
         }
         this.bucket = bucket;
     }
 
+    /**
+     * Upload a file to cloud storage with user identity and story context.
+     *
+     * <p><strong>Flow:</strong></p>
+     * <ol>
+     *   <li>Validate pre-conditions</li>
+     *   <li>Generate user and story-scoped storage key (via {@link StorageKeyGeneratorPort})</li>
+     *   <li>Store file in cloud (via {@link StoragePort})</li>
+     *   <li>Attach userId to response for audit trail</li>
+     * </ol>
+     *
+     * @param userContext authenticated user (extracted from Bearer token)
+     * @param storyId     story context ID for organizing files within user's space
+     * @param filename    original filename (e.g. {@code report.pdf})
+     * @param contentType MIME type (e.g. {@code application/pdf})
+     * @param content     raw bytes of the file
+     * @return metadata of the stored object (includes userId for audit trail)
+     * @throws IllegalArgumentException if any parameter is invalid
+     * @throws StorageException         if cloud storage operation fails
+     */
     @Override
-    @Deprecated
-    public StorageObject upload(String filename, String contentType, byte[] content) throws StorageException {
-        UserContext anonymousUser = new UserContext("anonymous", null, null);
-        return upload(anonymousUser, filename, contentType, content);
-    }
+    public StorageObject upload(UserContext userContext, String storyId, String filename, String contentType, byte[] content) throws StorageException {
+        // Validate pre-conditions
+        validateUploadParameters(userContext, storyId, filename, contentType, content);
 
-    @Override
-    public StorageObject upload(UserContext userContext, String filename, String contentType, byte[] content) throws StorageException {
-        if (userContext == null) {
-            throw new IllegalArgumentException("userContext must not be null");
-        }
-        validateFilename(filename);
-        validateContent(content);
+        // Generate user and story-scoped key via strategy port
+        String key = keyGenerator.generateKey(userContext.getUserId(), storyId, filename);
 
-        String key = generateUserScopedKey(userContext.getUserId(), filename);
+        // Store in cloud and receive metadata
+        StorageObject stored = storagePort.store(bucket, key, contentType, content);
 
-        try {
-            StorageObject result = storagePort.store(bucket, key, contentType, content);
-
-            // Attach userId to result
-            return new StorageObject(
-                    result.getKey(),
-                    result.getBucket(),
-                    result.getContentType(),
-                    result.getSizeBytes(),
-                    result.getUploadedAt(),
-                    userContext.getUserId()
-            );
-        } catch (StorageException ex) {
-            throw ex;
-        }
+        // Attach userId to response for audit trail
+        return new StorageObject(
+                stored.getKey(),
+                stored.getBucket(),
+                stored.getContentType(),
+                stored.getSizeBytes(),
+                stored.getUploadedAt(),
+                userContext.getUserId()
+        );
     }
 
     // ──────────────────────────────────────────────────────────────────────────
-    // Private helpers
+    // Validation — private method for internal use only
     // ──────────────────────────────────────────────────────────────────────────
 
     /**
-     * Generates user-scoped key: users/{userId}/2024-01-15/uuid-filename
+     * Validate all upload parameters before processing.
+     *
+     * <p>Fails fast if any pre-condition is violated. Caller should handle exceptions.</p>
+     *
+     * @throws IllegalArgumentException if any parameter is invalid
      */
-    private String generateUserScopedKey(String userId, String filename) {
-        String date = LocalDate.now(ZoneId.of("UTC")).toString();
-        String uuid = UUID.randomUUID().toString().substring(0, 8);
-        String safeFilename = filename.replaceAll("[^a-zA-Z0-9._-]", "_");
-        return String.format("users/%s/%s/%s-%s", userId, date, uuid, safeFilename);
-    }
-
-    private void validateFilename(String filename) {
+    private void validateUploadParameters(UserContext userContext, String storyId, String filename, String contentType, byte[] content) {
+        if (userContext == null) {
+            throw new IllegalArgumentException("userContext must not be null");
+        }
+        if (storyId == null || storyId.isBlank()) {
+            throw new IllegalArgumentException("storyId must not be blank");
+        }
         if (filename == null || filename.isBlank()) {
             throw new IllegalArgumentException("filename must not be blank");
         }
-    }
-
-    private void validateContent(byte[] content) {
+        if (contentType == null || contentType.isBlank()) {
+            throw new IllegalArgumentException("contentType must not be blank");
+        }
         if (content == null || content.length == 0) {
             throw new IllegalArgumentException("file content must not be empty");
         }

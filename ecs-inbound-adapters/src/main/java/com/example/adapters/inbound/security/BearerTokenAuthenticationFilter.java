@@ -9,10 +9,13 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.http.HttpStatus;
+import org.springframework.http.HttpStatus;import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.web.filter.OncePerRequestFilter;
 
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.Optional;
 
 /**
@@ -23,6 +26,7 @@ import java.util.Optional;
  *   <li>Intercepts every HTTP request</li>
  *   <li>Extracts Bearer token from Authorization header (via AuthorizationExtractor)</li>
  *   <li>Validates token and extracts UserContext (via TokenExtractorPort)</li>
+ *   <li>Sets Spring Security Authentication in SecurityContextHolder</li>
  *   <li>Stores UserContext in RequestContextHolder (thread-local)</li>
  *   <li>Proceeds to next filter/controller</li>
  *   <li>Clears context in finally block to prevent ThreadLocal leaks</li>
@@ -33,15 +37,15 @@ import java.util.Optional;
  *
  * <p><strong>Error Handling:</strong></p>
  * <ul>
- *   <li>Missing Authorization header → 401 Unauthorized</li>
- *   <li>Invalid Bearer token format → 401 Unauthorized</li>
+ *   <li>Missing Authorization header → Proceeds without authentication (filter allows)</li>
+ *   <li>Invalid Bearer token format → 400 Bad Request</li>
  *   <li>Token validation fails → 401 Unauthorized</li>
- *   <li>All errors are logged and no context is set</li>
+ *   <li>Successful token → Sets Authentication in SecurityContextHolder</li>
  * </ul>
  *
  * <p><strong>Thread-Safety:</strong> Extends OncePerRequestFilter to ensure filter
- * executes exactly once per request. Uses ThreadLocal (RequestContextHolder) for
- * storing user context.</p>
+ * executes exactly once per request. Uses ThreadLocal (RequestContextHolder) and
+ * SecurityContextHolder for storing user context.</p>
  *
  * @see RequestContextHolder
  * @see AuthorizationExtractor
@@ -81,17 +85,33 @@ public class BearerTokenAuthenticationFilter extends OncePerRequestFilter {
                     String token = AuthorizationExtractor.extractBearerToken(authHeader);
                     UserContext userContext = tokenExtractor.extractUserContext(token);
 
+                    // Set Spring Security Authentication (required for @Authenticated endpoints)
+                    Authentication authentication = new UsernamePasswordAuthenticationToken(
+                            userContext.getUserId(),
+                            token,
+                            new ArrayList<>()  // Empty authorities for now
+                    );
+                    SecurityContextHolder.getContext().setAuthentication(authentication);
+
                     // Store in thread-local for downstream access
                     RequestContextHolder.set(userContext);
                     log.debug("Bearer token authenticated: userId={}", userContext.getUserId());
 
-                } catch (IllegalArgumentException | TokenValidationException ex) {
-                    log.warn("Token authentication failed: {}", ex.getMessage());
-                    // Don't set context - proceed without authentication
-                    // Controllers/endpoints can check if context is present
+                } catch (IllegalArgumentException ex) {
+                    log.warn("Invalid Bearer token format: {}", ex.getMessage());
+                    // Invalid format - clear any authentication and let ExceptionTranslationFilter handle it
+                    SecurityContextHolder.clearContext();
+                    throw new jakarta.servlet.ServletException("Invalid Bearer token format", ex);
+                } catch (TokenValidationException ex) {
+                    log.warn("Token validation failed: {}", ex.getMessage());
+                    // Token validation failed - clear any authentication and let ExceptionTranslationFilter handle it
+                    SecurityContextHolder.clearContext();
+                    throw new jakarta.servlet.ServletException("Token validation failed", ex);
                 }
             } else {
                 log.debug("No Authorization header present");
+                // No Authorization header - allow request to proceed (public endpoints will succeed,
+                // protected endpoints will be caught by AuthorizationFilter and return 403)
             }
 
             // Proceed to next filter/controller
@@ -100,6 +120,7 @@ public class BearerTokenAuthenticationFilter extends OncePerRequestFilter {
         } finally {
             // Always clean up ThreadLocal to prevent leaks
             RequestContextHolder.clear();
+            // Note: Do NOT clear SecurityContextHolder here - let Spring manage it
         }
     }
 
