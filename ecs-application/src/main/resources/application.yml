@@ -36,9 +36,27 @@ logging:
     software.amazon.awssdk: WARN
     org.springframework.security: DEBUG
 
-# IDM Configuration
+# ╔════════════════════════════════════════════════════════════════════╗
+# ║ IDM (Identity & Access Management) Configuration                   ║
+# ╚════════════════════════════════════════════════════════════════════╝
 app:
   security:
+    # Feature flag: Toggle Bearer token authentication on/off
+    #
+    # Options:
+    #   true  (default) — Bearer token required for /api/files/** endpoints
+    #   false — All requests allowed without Bearer token (testing only)
+    #
+    # To disable:
+    #   mvn spring-boot:run -Dspring-boot.run.arguments="--app.security.bearer-token-auth-enabled=false"
+    #
+    # Or via environment variable:
+    #   export APP_SECURITY_BEARER_TOKEN_AUTH_ENABLED=false
+    #   docker run -e APP_SECURITY_BEARER_TOKEN_AUTH_ENABLED=false app
+    #
     bearer-token-auth-enabled: true
-    token-format: "base64"  # Options: base64 (demo), jwt (future)
+
+    # Token format (for future JWT support)
+    # Options: base64 (current demo implementation), jwt (planned)
+    token-format: "base64"
 

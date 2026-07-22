@@ -19,3 +19,15 @@ logging:
     com.example.adapters.inbound.security: DEBUG
     com.example.core.usecases: DEBUG
     org.springframework.security: DEBUG
+
+# ╔════════════════════════════════════════════════════════════════╗
+# ║ Bearer Token Authentication — Toggle for Testing              ║
+# ╚════════════════════════════════════════════════════════════════╝
+# To disable Bearer token auth and test without tokens:
+#   mvn spring-boot:run \
+#     -Dspring-boot.run.arguments="--spring.profiles.active=local-minio --app.security.bearer-token-auth-enabled=false"
+app:
+  security:
+    # Uncomment or override to disable auth for testing
+    # bearer-token-auth-enabled: false
+

@@ -18,3 +18,17 @@ logging:
   level:
     com.example.adapters.inbound.security: INFO
     com.example.core.usecases: INFO
+
+# ╔════════════════════════════════════════════════════════════════╗
+# ║ Bearer Token Authentication — Production Settings             ║
+# ╚════════════════════════════════════════════════════════════════╝
+# In production, Bearer token auth is enabled by default
+# To disable in emergency (should require approval):
+#   docker run -e APP_SECURITY_BEARER_TOKEN_AUTH_ENABLED=false app
+# (Requires restart — see documentation for instant toggle endpoint)
+app:
+  security:
+    # IMPORTANT: Keep this true in production
+    # Only disable if explicitly required for emergency troubleshooting
+    bearer-token-auth-enabled: true
+
