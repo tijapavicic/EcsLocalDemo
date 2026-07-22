@@ -14,3 +14,8 @@ storage:
     access-key: minioadmin
     secret-key: minioadmin
 
+logging:
+  level:
+    com.example.adapters.inbound.security: DEBUG
+    com.example.core.usecases: DEBUG
+    org.springframework.security: DEBUG

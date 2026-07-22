@@ -2,26 +2,22 @@ package com.example.core.usecases;
 
 import com.example.core.domain.StorageException;
 import com.example.core.domain.StorageObject;
+import com.example.core.domain.UserContext;
 import com.example.core.ports.FileServicePort;
 import com.example.core.ports.StoragePort;
 
+import java.time.Instant;
 import java.time.LocalDate;
+import java.time.ZoneId;
 import java.util.Objects;
 import java.util.UUID;
 
 /**
- * Core use-case: orchestrates file upload.
+ * Core use-case: orchestrates file upload with IAM support.
  *
- * <p><strong>No Spring annotations.</strong> This class is instantiated
- * by {@code StorageConfiguration} in the application module via constructor injection.</p>
+ * <p><strong>No Spring annotations.</strong> Pure Java implementation.</p>
  *
- * <p>Responsibilities:
- * <ul>
- *   <li>Validates input (non-null, non-empty content)</li>
- *   <li>Generates a collision-free storage key: {@code yyyy-MM-dd/uuid-filename}</li>
- *   <li>Delegates persistence to {@link StoragePort}</li>
- * </ul>
- * </p>
+ * <p>Generates user-scoped storage keys: {@code users/{userId}/yyyy-MM-dd/uuid-filename}</p>
  */
 public class FileServiceImpl implements FileServicePort {
 
@@ -41,12 +37,37 @@ public class FileServiceImpl implements FileServicePort {
     }
 
     @Override
+    @Deprecated
     public StorageObject upload(String filename, String contentType, byte[] content) throws StorageException {
+        UserContext anonymousUser = new UserContext("anonymous", null, null);
+        return upload(anonymousUser, filename, contentType, content);
+    }
+
+    @Override
+    public StorageObject upload(UserContext userContext, String filename, String contentType, byte[] content) throws StorageException {
+        if (userContext == null) {
+            throw new IllegalArgumentException("userContext must not be null");
+        }
         validateFilename(filename);
         validateContent(content);
 
-        String key = generateKey(filename);
-        return storagePort.store(bucket, key, contentType, content);
+        String key = generateUserScopedKey(userContext.getUserId(), filename);
+
+        try {
+            StorageObject result = storagePort.store(bucket, key, contentType, content);
+
+            // Attach userId to result
+            return new StorageObject(
+                    result.getKey(),
+                    result.getBucket(),
+                    result.getContentType(),
+                    result.getSizeBytes(),
+                    result.getUploadedAt(),
+                    userContext.getUserId()
+            );
+        } catch (StorageException ex) {
+            throw ex;
+        }
     }
 
     // ──────────────────────────────────────────────────────────────────────────
@@ -54,13 +75,13 @@ public class FileServiceImpl implements FileServicePort {
     // ──────────────────────────────────────────────────────────────────────────
 
     /**
-     * Generates a unique, date-partitioned key to avoid collisions and aid sorting.
-     * Example: {@code 2024-01-15/3f4a1b2c-report.pdf}
+     * Generates user-scoped key: users/{userId}/2024-01-15/uuid-filename
      */
-    private String generateKey(String filename) {
-        String date = LocalDate.now().toString();
+    private String generateUserScopedKey(String userId, String filename) {
+        String date = LocalDate.now(ZoneId.of("UTC")).toString();
         String uuid = UUID.randomUUID().toString().substring(0, 8);
-        return date + "/" + uuid + "-" + filename;
+        String safeFilename = filename.replaceAll("[^a-zA-Z0-9._-]", "_");
+        return String.format("users/%s/%s/%s-%s", userId, date, uuid, safeFilename);
     }
 
     private void validateFilename(String filename) {

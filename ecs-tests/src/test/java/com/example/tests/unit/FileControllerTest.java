@@ -3,7 +3,9 @@ package com.example.tests.unit;
 import com.example.adapters.inbound.rest.FileController;
 import com.example.core.domain.StorageException;
 import com.example.core.domain.StorageObject;
+import com.example.core.domain.TokenValidationException;
 import com.example.core.ports.FileServicePort;
+import com.example.core.ports.TokenExtractorPort;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -25,19 +27,21 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * Unit tests for {@link FileController} — the inbound REST adapter.
  *
  * <p>Uses MockMvc in <em>standalone mode</em> — NO Spring context is started.
- * The FileServicePort is mocked with Mockito.</p>
+ * The FileServicePort and TokenExtractorPort are mocked with Mockito.</p>
  */
 @DisplayName("FileController — unit tests (standalone MockMvc)")
 class FileControllerTest {
 
     private MockMvc mockMvc;
     private FileServicePort fileService;
+    private TokenExtractorPort tokenExtractor;
 
     @BeforeEach
     void setUp() {
         fileService = mock(FileServicePort.class);
+        tokenExtractor = mock(TokenExtractorPort.class);
         mockMvc = MockMvcBuilders
-                .standaloneSetup(new FileController(fileService))
+                .standaloneSetup(new FileController(fileService, tokenExtractor))
                 .build();
     }
 
@@ -45,20 +49,29 @@ class FileControllerTest {
     @DisplayName("POST /api/files/upload — returns 201 with StorageObject JSON")
     void upload_returns201_withStorageObjectBody() throws Exception {
         StorageObject stored = new StorageObject(
-                "2024-01-15/abc-report.pdf", "demo-bucket",
-                "application/pdf", 1024L, Instant.now());
+                "users/user123/2024-01-15/abc-report.pdf", "demo-bucket",
+                "application/pdf", 1024L, Instant.now(), "user123");
 
-        when(fileService.upload(any(), any(), any())).thenReturn(stored);
+        // Mock TokenExtractorPort to return a valid UserContext
+        com.example.core.domain.UserContext userContext = new com.example.core.domain.UserContext("user123", "user@example.com", "token");
+        when(tokenExtractor.extractUserContext(any())).thenReturn(userContext);
+        when(fileService.upload(any(), any(), any(), any())).thenReturn(stored);
 
         MockMultipartFile file = new MockMultipartFile(
                 "file", "report.pdf", "application/pdf", "PDF content".getBytes());
 
-        mockMvc.perform(multipart("/api/files/upload").file(file))
+        // Create a Bearer token (base64: "user123:user@example.com")
+        String bearerToken = java.util.Base64.getEncoder().encodeToString("user123:user@example.com".getBytes());
+
+        mockMvc.perform(multipart("/api/files/upload")
+                .file(file)
+                .header("Authorization", "Bearer " + bearerToken))
                 .andExpect(status().isCreated())
-                .andExpect(jsonPath("$.key").value("2024-01-15/abc-report.pdf"))
+                .andExpect(jsonPath("$.key").value("users/user123/2024-01-15/abc-report.pdf"))
                 .andExpect(jsonPath("$.bucket").value("demo-bucket"))
                 .andExpect(jsonPath("$.contentType").value("application/pdf"))
-                .andExpect(jsonPath("$.sizeBytes").value(1024));
+                .andExpect(jsonPath("$.sizeBytes").value(1024))
+                .andExpect(jsonPath("$.userId").value("user123"));
     }
 
     @Test
@@ -74,13 +87,21 @@ class FileControllerTest {
     @Test
     @DisplayName("POST /api/files/upload — returns 500 when StorageException is thrown")
     void upload_returns500_whenStorageExceptionThrown() throws Exception {
-        when(fileService.upload(any(), any(), any()))
+        // Mock TokenExtractorPort to return a valid UserContext
+        com.example.core.domain.UserContext userContext = new com.example.core.domain.UserContext("user123", "user@example.com", "token");
+        when(tokenExtractor.extractUserContext(any())).thenReturn(userContext);
+        when(fileService.upload(any(), any(), any(), any()))
                 .thenThrow(new StorageException("MinIO unreachable"));
 
         MockMultipartFile file = new MockMultipartFile(
                 "file", "file.txt", MediaType.TEXT_PLAIN_VALUE, "data".getBytes());
 
-        mockMvc.perform(multipart("/api/files/upload").file(file))
+        // Create a Bearer token
+        String bearerToken = java.util.Base64.getEncoder().encodeToString("user123:user@example.com".getBytes());
+
+        mockMvc.perform(multipart("/api/files/upload")
+                .file(file)
+                .header("Authorization", "Bearer " + bearerToken))
                 .andExpect(status().isInternalServerError())
                 .andExpect(jsonPath("$.error").value("Storage operation failed"));
     }

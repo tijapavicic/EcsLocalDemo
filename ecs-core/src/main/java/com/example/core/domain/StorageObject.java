@@ -33,5 +33,8 @@ public class StorageObject {
     /** UTC timestamp of the upload. */
     @JsonProperty("uploadedAt")
     Instant uploadedAt;
-}
 
+    /** User ID - who uploaded this file. */
+    @JsonProperty("userId")
+    String userId;
+}

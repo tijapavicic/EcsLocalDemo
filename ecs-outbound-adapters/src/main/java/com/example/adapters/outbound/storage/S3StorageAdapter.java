@@ -52,7 +52,9 @@ public class S3StorageAdapter implements StoragePort {
 
             log.info("Stored: s3://{}/{} ({} bytes)", bucket, key, content.length);
 
-            return new StorageObject(key, bucket, contentType, content.length, Instant.now());
+            // Return StorageObject without userId — userId is set by FileServiceImpl
+            // from the UserContext after storage succeeds.
+            return new StorageObject(key, bucket, contentType, (long) content.length, Instant.now(), null);
 
         } catch (S3Exception ex) {
             throw new StorageException(

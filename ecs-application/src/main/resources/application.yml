@@ -32,5 +32,13 @@ management:
 logging:
   level:
     com.example: INFO
+    com.example.adapters.inbound.security: DEBUG
     software.amazon.awssdk: WARN
+    org.springframework.security: DEBUG
+
+# IDM Configuration
+app:
+  security:
+    bearer-token-auth-enabled: true
+    token-format: "base64"  # Options: base64 (demo), jwt (future)
 

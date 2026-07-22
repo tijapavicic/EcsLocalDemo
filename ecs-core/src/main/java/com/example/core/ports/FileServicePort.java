@@ -2,6 +2,7 @@ package com.example.core.ports;
 
 import com.example.core.domain.StorageException;
 import com.example.core.domain.StorageObject;
+import com.example.core.domain.UserContext;
 
 /**
  * <strong>Inbound port</strong> — the contract the REST layer calls into.
@@ -14,7 +15,7 @@ import com.example.core.domain.StorageObject;
 public interface FileServicePort {
 
     /**
-     * Upload a file to cloud storage.
+     * Upload a file to cloud storage (legacy, without user context).
      *
      * @param filename    original filename (e.g. {@code report.pdf})
      * @param contentType MIME type (e.g. {@code application/pdf})
@@ -22,7 +23,24 @@ public interface FileServicePort {
      * @return metadata of the stored object
      * @throws StorageException         if the storage provider rejects the upload
      * @throws IllegalArgumentException if filename is blank or content is empty
+     * @deprecated Use {@link #upload(UserContext, String, String, byte[])} instead
      */
+    @Deprecated
     StorageObject upload(String filename, String contentType, byte[] content) throws StorageException;
+
+    /**
+     * Upload a file to cloud storage with user identity.
+     *
+     * <p>File is stored in user-scoped path: {@code users/{userId}/2024-01-15/filename.pdf}</p>
+     *
+     * @param userContext authenticated user (extracted from Bearer token)
+     * @param filename    original filename (e.g. {@code report.pdf})
+     * @param contentType MIME type (e.g. {@code application/pdf})
+     * @param content     raw bytes of the file — must not be null or empty
+     * @return metadata of the stored object (includes userId)
+     * @throws StorageException         if the storage provider rejects the upload
+     * @throws IllegalArgumentException if filename is blank or content is empty
+     */
+    StorageObject upload(UserContext userContext, String filename, String contentType, byte[] content) throws StorageException;
 }
 

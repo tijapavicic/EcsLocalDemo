@@ -2,6 +2,7 @@ package com.example.tests.unit;
 
 import com.example.core.domain.StorageException;
 import com.example.core.domain.StorageObject;
+import com.example.core.domain.UserContext;
 import com.example.core.ports.StoragePort;
 import com.example.core.usecases.FileServiceImpl;
 import org.junit.jupiter.api.BeforeEach;
@@ -45,7 +46,7 @@ class FileServiceImplTest {
     @Test
     @DisplayName("upload() — delegates to StoragePort with correct bucket and content")
     void upload_delegatesToStoragePort_withCorrectArguments() throws StorageException {
-        StorageObject expected = new StorageObject("key", BUCKET, CONTENT_TYPE, CONTENT.length, Instant.now());
+        StorageObject expected = new StorageObject("key", BUCKET, CONTENT_TYPE, (long) CONTENT.length, Instant.now(), null);
         when(storagePort.store(eq(BUCKET), any(), eq(CONTENT_TYPE), eq(CONTENT))).thenReturn(expected);
 
         StorageObject result = fileService.upload(FILENAME, CONTENT_TYPE, CONTENT);
@@ -57,20 +58,23 @@ class FileServiceImplTest {
     }
 
     @Test
-    @DisplayName("upload() — key contains today's date and original filename")
-    void upload_generatedKey_containsDateAndFilename() throws StorageException {
+    @DisplayName("upload() — key contains today's date, userId and original filename")
+    void upload_generatedKey_containsDateUserIdAndFilename() throws StorageException {
         when(storagePort.store(any(), any(), any(), any()))
-                .thenAnswer(inv -> new StorageObject(inv.getArgument(1), BUCKET, CONTENT_TYPE, CONTENT.length, Instant.now()));
+                .thenAnswer(inv -> new StorageObject(inv.getArgument(1), BUCKET, CONTENT_TYPE, (long) CONTENT.length, Instant.now(), null));
 
-        fileService.upload(FILENAME, CONTENT_TYPE, CONTENT);
+        UserContext user = new UserContext("user123", "user@example.com", "token");
+        fileService.upload(user, FILENAME, CONTENT_TYPE, CONTENT);
 
         // Capture the key that was passed to storagePort
         var captor = org.mockito.ArgumentCaptor.forClass(String.class);
         verify(storagePort).store(eq(BUCKET), captor.capture(), any(), any());
         String capturedKey = captor.getValue();
 
+        // Key should have format: users/{userId}/{date}/{uuid-filename}
+        assertThat(capturedKey).contains("users/user123");
         assertThat(capturedKey).contains(FILENAME);
-        assertThat(capturedKey).matches("\\d{4}-\\d{2}-\\d{2}/.+");
+        assertThat(capturedKey).matches("users/user123/\\d{4}-\\d{2}-\\d{2}/.+");
     }
 
     // ── Validation ────────────────────────────────────────────────────────────
